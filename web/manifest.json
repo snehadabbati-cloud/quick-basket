@@ -1,0 +1,36 @@
+{
+    "name": "Quick Basket - 10-Minute Grocery Delivery",
+    "short_name": "Quick Basket",
+    "start_url": ".",
+    "display": "standalone",
+    "background_color": "#F8F9FA",
+    "theme_color": "#0C8340",
+    "description": "Superfast 10-minute grocery delivery app with real-time tracking, fresh produce, and exclusive deals.",
+    "orientation": "any",
+    "prefer_related_applications": false,
+    "categories": ["shopping", "food", "lifestyle"],
+    "icons": [
+        {
+            "src": "icons/Icon-192.png",
+            "sizes": "192x192",
+            "type": "image/png"
+        },
+        {
+            "src": "icons/Icon-512.png",
+            "sizes": "512x512",
+            "type": "image/png"
+        },
+        {
+            "src": "icons/Icon-maskable-192.png",
+            "sizes": "192x192",
+            "type": "image/png",
+            "purpose": "maskable"
+        },
+        {
+            "src": "icons/Icon-maskable-512.png",
+            "sizes": "512x512",
+            "type": "image/png",
+            "purpose": "maskable"
+        }
+    ]
+}
