@@ -4,6 +4,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../core/config/supabase_config.dart';
 import '../models/category_model.dart';
+import '../models/subcategory_model.dart';
 import '../models/product_model.dart';
 import '../models/banner_model.dart';
 import '../models/cart_item_model.dart';
@@ -25,6 +26,13 @@ class SupabaseService {
 
   /// Reactive notifier for real-time order updates across customer & store screens
   final ValueNotifier<List<OrderModel>> ordersNotifier = ValueNotifier<List<OrderModel>>([]);
+
+  /// Reactive notifier for real-time category & subcategory updates across customer & admin screens
+  final ValueNotifier<int> categoriesNotifier = ValueNotifier<int>(0);
+
+  void notifyCategoriesChanged() {
+    categoriesNotifier.value++;
+  }
 
   void _notifyOrdersChanged() {
     ordersNotifier.value = List<OrderModel>.unmodifiable(_localOrders);
@@ -163,29 +171,493 @@ class SupabaseService {
   }
 
   // ==========================================
-  // CATALOG & PRODUCTS (PRD Sections 4.3, 4.4, 4.5)
+  // DYNAMIC CATEGORY & SUBCATEGORY MANAGEMENT (PRD 4.4, 5.4)
   // ==========================================
 
-  /// Fetch all active categories
+  static const String _categoriesStorageKey = 'qb_custom_categories_v2';
+  static const String _subcategoriesStorageKey = 'qb_custom_subcategories_v2';
+
+  /// Fetch all active categories with their active subcategories
   Future<List<CategoryModel>> getCategories() async {
+    final allSubs = await getSubcategories(includeInactive: false);
+    final Map<String, List<String>> subsByCat = {};
+    for (var s in allSubs) {
+      subsByCat.putIfAbsent(s.categoryId, () => []).add(s.name);
+    }
+
+    List<CategoryModel> remoteList = [];
+    if (_isInitialized) {
+      try {
+        final response = await client
+            .from('categories')
+            .select()
+            .eq('is_active', true)
+            .order('display_order', ascending: true);
+        final List<dynamic> data = response as List<dynamic>;
+        remoteList = data.map((json) => CategoryModel.fromJson(json as Map<String, dynamic>)).toList();
+      } catch (e) {
+        debugPrint('[SupabaseService] Remote categories fetch fallback: $e');
+      }
+    }
+
+    var categories = await _mergeLocalCategories(remoteList, onlyActive: true);
+
+    categories = categories.map((c) {
+      final subs = subsByCat[c.id];
+      if (subs != null && subs.isNotEmpty) {
+        return c.copyWith(subcategories: subs);
+      }
+      return c;
+    }).toList();
+
+    return categories;
+  }
+
+  /// Fetch ALL categories (including inactive ones for Admin Panel)
+  Future<List<CategoryModel>> getAllCategories() async {
+    final allSubs = await getSubcategories(includeInactive: true);
+    final Map<String, List<String>> subsByCat = {};
+    for (var s in allSubs) {
+      subsByCat.putIfAbsent(s.categoryId, () => []).add(s.name);
+    }
+
+    List<CategoryModel> remoteList = [];
+    if (_isInitialized) {
+      try {
+        final response = await client
+            .from('categories')
+            .select()
+            .order('display_order', ascending: true);
+        final List<dynamic> data = response as List<dynamic>;
+        remoteList = data.map((json) => CategoryModel.fromJson(json as Map<String, dynamic>)).toList();
+      } catch (e) {
+        debugPrint('[SupabaseService] Remote all categories fetch fallback: $e');
+      }
+    }
+
+    var categories = await _mergeLocalCategories(remoteList, onlyActive: false);
+
+    categories = categories.map((c) {
+      final subs = subsByCat[c.id];
+      if (subs != null && subs.isNotEmpty) {
+        return c.copyWith(subcategories: subs);
+      }
+      return c;
+    }).toList();
+
+    return categories;
+  }
+
+  /// Merge remote categories with local storage overrides
+  Future<List<CategoryModel>> _mergeLocalCategories(List<CategoryModel> baseList, {required bool onlyActive}) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.reload();
+
+    List<CategoryModel> list = [];
+    if (baseList.isNotEmpty) {
+      list = List.from(baseList);
+    } else {
+      list = List.from(MockDataService.categories);
+    }
+
+    final rawJson = prefs.getString(_categoriesStorageKey);
+    if (rawJson != null && rawJson.isNotEmpty) {
+      try {
+        final List<dynamic> localList = jsonDecode(rawJson) as List<dynamic>;
+        for (var item in localList) {
+          final cat = CategoryModel.fromJson(item as Map<String, dynamic>);
+          final idx = list.indexWhere((c) => c.id == cat.id || c.slug == cat.slug);
+          if (idx != -1) {
+            list[idx] = cat;
+          } else {
+            list.add(cat);
+          }
+        }
+      } catch (e) {
+        debugPrint('[SupabaseService] Error parsing local categories: $e');
+      }
+    }
+
+    if (onlyActive) {
+      list = list.where((c) => c.isActive).toList();
+    }
+
+    list.sort((a, b) => a.displayOrder.compareTo(b.displayOrder));
+    return list;
+  }
+
+  Future<void> _saveLocalCategory(CategoryModel category) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.reload();
+
+    List<Map<String, dynamic>> list = [];
+    final rawJson = prefs.getString(_categoriesStorageKey);
+    if (rawJson != null && rawJson.isNotEmpty) {
+      try {
+        list = (jsonDecode(rawJson) as List<dynamic>).map((e) => Map<String, dynamic>.from(e as Map)).toList();
+      } catch (_) {}
+    }
+
+    final idx = list.indexWhere((e) => e['id'] == category.id || e['slug'] == category.slug);
+    if (idx != -1) {
+      list[idx] = category.toJson();
+    } else {
+      list.add(category.toJson());
+    }
+
+    await prefs.setString(_categoriesStorageKey, jsonEncode(list));
+  }
+
+  Future<void> _deleteLocalCategory(String categoryId) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.reload();
+
+    List<Map<String, dynamic>> list = [];
+    final rawJson = prefs.getString(_categoriesStorageKey);
+    if (rawJson != null && rawJson.isNotEmpty) {
+      try {
+        list = (jsonDecode(rawJson) as List<dynamic>).map((e) => Map<String, dynamic>.from(e as Map)).toList();
+      } catch (_) {}
+    }
+
+    list.removeWhere((e) => e['id'] == categoryId);
+    await prefs.setString(_categoriesStorageKey, jsonEncode(list));
+  }
+
+  /// Create a new category
+  Future<CategoryModel> createCategory({
+    required String name,
+    required String slug,
+    String? imageUrl,
+    String? iconName,
+    String? colorHex,
+    int displayOrder = 0,
+    bool isActive = true,
+  }) async {
+    final newId = 'cat-${DateTime.now().millisecondsSinceEpoch}';
+    final category = CategoryModel(
+      id: newId,
+      name: name,
+      slug: slug,
+      imageUrl: imageUrl,
+      iconName: iconName ?? 'category',
+      colorHex: colorHex ?? '#E8F5E9',
+      displayOrder: displayOrder,
+      isActive: isActive,
+      subcategories: const [],
+    );
+
+    if (_isInitialized) {
+      try {
+        await client.from('categories').insert({
+          'name': name,
+          'slug': slug,
+          'image_url': imageUrl,
+          'icon_name': iconName ?? 'category',
+          'color_hex': colorHex ?? '#E8F5E9',
+          'display_order': displayOrder,
+          'is_active': isActive,
+        });
+      } catch (e) {
+        debugPrint('[SupabaseService] Note: Category insert into remote DB: $e');
+      }
+    }
+
+    await _saveLocalCategory(category);
+    notifyCategoriesChanged();
+    return category;
+  }
+
+  /// Update an existing category
+  Future<void> updateCategory(CategoryModel category) async {
+    if (_isInitialized) {
+      try {
+        await client.from('categories').update({
+          'name': category.name,
+          'slug': category.slug,
+          'image_url': category.imageUrl,
+          'icon_name': category.iconName,
+          'color_hex': category.colorHex,
+          'display_order': category.displayOrder,
+          'is_active': category.isActive,
+        }).eq('id', category.id);
+      } catch (e) {
+        debugPrint('[SupabaseService] Note: Category update in remote DB: $e');
+      }
+    }
+
+    await _saveLocalCategory(category);
+    notifyCategoriesChanged();
+  }
+
+  /// Delete a category
+  Future<void> deleteCategory(String categoryId) async {
+    if (_isInitialized) {
+      try {
+        await client.from('categories').delete().eq('id', categoryId);
+      } catch (e) {
+        debugPrint('[SupabaseService] Note: Category delete from remote DB: $e');
+      }
+    }
+
+    await _deleteLocalCategory(categoryId);
+    notifyCategoriesChanged();
+  }
+
+  /// Toggle category active status
+  Future<void> toggleCategoryStatus(String categoryId, bool isActive) async {
+    final all = await getAllCategories();
+    final cat = all.where((c) => c.id == categoryId).firstOrNull;
+    if (cat != null) {
+      await updateCategory(cat.copyWith(isActive: isActive));
+    }
+  }
+
+  // ==========================================
+  // SUBCATEGORY METHODS (PRD 4.4, 5.4)
+  // ==========================================
+
+  /// Fetch subcategories with optional category filtering
+  Future<List<SubcategoryModel>> getSubcategories({
+    String? categoryId,
+    bool includeInactive = false,
+  }) async {
+    List<SubcategoryModel> remoteList = [];
+
+    if (_isInitialized) {
+      try {
+        var query = client.from('subcategories').select();
+        if (categoryId != null && categoryId.isNotEmpty) {
+          query = query.eq('category_id', categoryId);
+        }
+        if (!includeInactive) {
+          query = query.eq('is_active', true);
+        }
+        final res = await query.order('display_order', ascending: true);
+        final List<dynamic> data = res as List<dynamic>;
+        remoteList = data.map((json) => SubcategoryModel.fromJson(json as Map<String, dynamic>)).toList();
+      } catch (e) {
+        debugPrint('[SupabaseService] Remote subcategories fetch fallback: $e');
+      }
+    }
+
+    var list = await _mergeLocalSubcategories(remoteList, categoryId: categoryId, onlyActive: !includeInactive);
+    return list;
+  }
+
+  /// Merge subcategories with local storage overrides
+  Future<List<SubcategoryModel>> _mergeLocalSubcategories(
+    List<SubcategoryModel> baseList, {
+    String? categoryId,
+    required bool onlyActive,
+  }) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.reload();
+
+    List<SubcategoryModel> list = List.from(baseList);
+
+    // Initial mock seed if list is empty
+    if (list.isEmpty) {
+      for (var cat in MockDataService.categories) {
+        if (categoryId == null || cat.id == categoryId) {
+          for (int i = 0; i < cat.subcategories.length; i++) {
+            final name = cat.subcategories[i];
+            final slug = name.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]+'), '-');
+            list.add(SubcategoryModel(
+              id: '${cat.id}-sub-${i + 1}',
+              categoryId: cat.id,
+              name: name,
+              slug: slug,
+              displayOrder: i + 1,
+              isActive: true,
+              createdAt: DateTime.now(),
+            ));
+          }
+        }
+      }
+    }
+
+    final rawJson = prefs.getString(_subcategoriesStorageKey);
+    if (rawJson != null && rawJson.isNotEmpty) {
+      try {
+        final List<dynamic> localList = jsonDecode(rawJson) as List<dynamic>;
+        for (var item in localList) {
+          final sub = SubcategoryModel.fromJson(item as Map<String, dynamic>);
+          final idx = list.indexWhere((s) => s.id == sub.id || (s.categoryId == sub.categoryId && s.slug == sub.slug));
+          if (idx != -1) {
+            list[idx] = sub;
+          } else {
+            list.add(sub);
+          }
+        }
+      } catch (e) {
+        debugPrint('[SupabaseService] Error parsing local subcategories: $e');
+      }
+    }
+
+    if (categoryId != null && categoryId.isNotEmpty) {
+      list = list.where((s) => s.categoryId == categoryId).toList();
+    }
+
+    if (onlyActive) {
+      list = list.where((s) => s.isActive).toList();
+    }
+
+    list.sort((a, b) => a.displayOrder.compareTo(b.displayOrder));
+    return list;
+  }
+
+  Future<void> _saveLocalSubcategory(SubcategoryModel sub) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.reload();
+
+    List<Map<String, dynamic>> list = [];
+    final rawJson = prefs.getString(_subcategoriesStorageKey);
+    if (rawJson != null && rawJson.isNotEmpty) {
+      try {
+        list = (jsonDecode(rawJson) as List<dynamic>).map((e) => Map<String, dynamic>.from(e as Map)).toList();
+      } catch (_) {}
+    }
+
+    final idx = list.indexWhere((e) => e['id'] == sub.id || (e['category_id'] == sub.categoryId && e['slug'] == sub.slug));
+    if (idx != -1) {
+      list[idx] = sub.toJson();
+    } else {
+      list.add(sub.toJson());
+    }
+
+    await prefs.setString(_subcategoriesStorageKey, jsonEncode(list));
+  }
+
+  Future<void> _deleteLocalSubcategory(String subcategoryId) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.reload();
+
+    List<Map<String, dynamic>> list = [];
+    final rawJson = prefs.getString(_subcategoriesStorageKey);
+    if (rawJson != null && rawJson.isNotEmpty) {
+      try {
+        list = (jsonDecode(rawJson) as List<dynamic>).map((e) => Map<String, dynamic>.from(e as Map)).toList();
+      } catch (_) {}
+    }
+
+    list.removeWhere((e) => e['id'] == subcategoryId);
+    await prefs.setString(_subcategoriesStorageKey, jsonEncode(list));
+  }
+
+  /// Create a new subcategory
+  Future<SubcategoryModel> createSubcategory({
+    required String categoryId,
+    required String name,
+    required String slug,
+    String? imageUrl,
+    int displayOrder = 0,
+    bool isActive = true,
+  }) async {
+    final newId = 'sub-${DateTime.now().millisecondsSinceEpoch}';
+    final sub = SubcategoryModel(
+      id: newId,
+      categoryId: categoryId,
+      name: name,
+      slug: slug,
+      imageUrl: imageUrl,
+      displayOrder: displayOrder,
+      isActive: isActive,
+      createdAt: DateTime.now(),
+    );
+
+    if (_isInitialized) {
+      try {
+        await client.from('subcategories').insert({
+          'category_id': categoryId,
+          'name': name,
+          'slug': slug,
+          'image_url': imageUrl,
+          'display_order': displayOrder,
+          'is_active': isActive,
+        });
+      } catch (e) {
+        debugPrint('[SupabaseService] Note: Subcategory insert into remote DB: $e');
+      }
+    }
+
+    await _saveLocalSubcategory(sub);
+    notifyCategoriesChanged();
+    return sub;
+  }
+
+  /// Update an existing subcategory
+  Future<void> updateSubcategory(SubcategoryModel subcategory) async {
+    if (_isInitialized) {
+      try {
+        await client.from('subcategories').update({
+          'category_id': subcategory.categoryId,
+          'name': subcategory.name,
+          'slug': subcategory.slug,
+          'image_url': subcategory.imageUrl,
+          'display_order': subcategory.displayOrder,
+          'is_active': subcategory.isActive,
+        }).eq('id', subcategory.id);
+      } catch (e) {
+        debugPrint('[SupabaseService] Note: Subcategory update in remote DB: $e');
+      }
+    }
+
+    await _saveLocalSubcategory(subcategory);
+    notifyCategoriesChanged();
+  }
+
+  /// Delete a subcategory
+  Future<void> deleteSubcategory(String subcategoryId) async {
+    if (_isInitialized) {
+      try {
+        await client.from('subcategories').delete().eq('id', subcategoryId);
+      } catch (e) {
+        debugPrint('[SupabaseService] Note: Subcategory delete from remote DB: $e');
+      }
+    }
+
+    await _deleteLocalSubcategory(subcategoryId);
+    notifyCategoriesChanged();
+  }
+
+  /// Toggle subcategory active status
+  Future<void> toggleSubcategoryStatus(String subcategoryId, bool isActive) async {
+    final all = await getSubcategories(includeInactive: true);
+    final sub = all.where((s) => s.id == subcategoryId).firstOrNull;
+    if (sub != null) {
+      await updateSubcategory(sub.copyWith(isActive: isActive));
+    }
+  }
+
+  /// Upload category or subcategory image to Supabase Storage
+  Future<String?> uploadCategoryImage({
+    required Uint8List bytes,
+    required String fileName,
+  }) async {
     if (!_isInitialized) {
-      return MockDataService.categories;
+      final b64 = base64Encode(bytes);
+      return 'data:image/png;base64,$b64';
     }
 
     try {
-      final response = await client
-          .from('categories')
-          .select()
-          .eq('is_active', true)
-          .order('display_order', ascending: true);
+      final ext = fileName.split('.').last.toLowerCase();
+      final mimeType = ext == 'png' ? 'image/png' : 'image/jpeg';
+      final cleanName = fileName.replaceAll(RegExp(r'[^a-zA-Z0-9_\.-]'), '_');
+      final storagePath = '${DateTime.now().millisecondsSinceEpoch}_$cleanName';
 
-      final List<dynamic> data = response as List<dynamic>;
-      if (data.isEmpty) return MockDataService.categories;
+      await client.storage.from('categories').uploadBinary(
+        storagePath,
+        bytes,
+        fileOptions: FileOptions(upsert: true, contentType: mimeType),
+      );
 
-      return data.map((json) => CategoryModel.fromJson(json as Map<String, dynamic>)).toList();
+      final publicUrl = client.storage.from('categories').getPublicUrl(storagePath);
+      return publicUrl;
     } catch (e) {
-      debugPrint('[SupabaseService] Error fetching categories, using fallback: $e');
-      return MockDataService.categories;
+      debugPrint('[SupabaseService] Note: Supabase Storage upload fallback to data URI: $e');
+      final b64 = base64Encode(bytes);
+      return 'data:image/png;base64,$b64';
     }
   }
 

@@ -3,6 +3,7 @@ import '../../../core/constants/app_colors.dart';
 import '../../../models/category_model.dart';
 import '../../../models/product_model.dart';
 import '../../../models/cart_item_model.dart';
+import '../../../services/supabase_service.dart';
 import '../../../shared_widgets/product_card.dart';
 import '../../../shared_widgets/product_details_sheet.dart';
 import '../../../shared_widgets/responsive_wrapper.dart';
@@ -36,6 +37,23 @@ class CategoryProductsScreen extends StatefulWidget {
 class _CategoryProductsScreenState extends State<CategoryProductsScreen> {
   String _selectedSubcategory = 'All';
   String _sortBy = 'Popularity'; // 'Popularity', 'Price: Low to High', 'Price: High to Low'
+  List<String> _dynamicSubcategories = [];
+
+  @override
+  void initState() {
+    super.initState();
+    _dynamicSubcategories = List.from(widget.category.subcategories);
+    _loadSubcategories();
+  }
+
+  Future<void> _loadSubcategories() async {
+    final subs = await SupabaseService().getSubcategories(categoryId: widget.category.id);
+    if (mounted && subs.isNotEmpty) {
+      setState(() {
+        _dynamicSubcategories = subs.map((s) => s.name).toList();
+      });
+    }
+  }
 
   List<ProductModel> get _categoryProducts {
     // Filter by category ID
@@ -85,7 +103,7 @@ class _CategoryProductsScreenState extends State<CategoryProductsScreen> {
   @override
   Widget build(BuildContext context) {
     final products = _categoryProducts;
-    final subcategories = ['All', ...widget.category.subcategories];
+    final subcategories = ['All', ..._dynamicSubcategories];
 
     return Scaffold(
       backgroundColor: AppColors.background,

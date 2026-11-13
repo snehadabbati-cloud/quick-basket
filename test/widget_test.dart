@@ -6,6 +6,7 @@ import 'package:quick_basket/core/constants/app_strings.dart';
 import 'package:quick_basket/shared_widgets/responsive_wrapper.dart';
 import 'package:quick_basket/features/home/screens/home_screen.dart';
 import 'package:quick_basket/features/order/screens/order_tracking_screen.dart';
+import 'package:quick_basket/features/admin/screens/admin_categories_screen.dart';
 import 'package:quick_basket/services/supabase_service.dart';
 import 'package:quick_basket/models/order_model.dart';
 
@@ -152,6 +153,69 @@ void main() {
     expect(find.text('Delivered'), findsWidgets);
 
     // 7. Clean up
+    await tester.pumpWidget(const SizedBox());
+    await tester.pump();
+  });
+
+  testWidgets('Dynamic Category & Subcategory CRUD and Admin Categories Screen test', (WidgetTester tester) async {
+    tester.view.physicalSize = const Size(1200, 800);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(() => tester.view.resetPhysicalSize());
+
+    // 1. Create a dynamic category via SupabaseService
+    final newCategory = await SupabaseService().createCategory(
+      name: 'Gourmet Organic',
+      slug: 'gourmet-organic',
+      iconName: 'eco',
+      colorHex: '#E8F5E9',
+      displayOrder: 99,
+      isActive: true,
+    );
+    expect(newCategory.name, 'Gourmet Organic');
+
+    // 2. Fetch categories and verify the new category is present
+    final categories = await SupabaseService().getCategories();
+    expect(categories.any((c) => c.name == 'Gourmet Organic'), isTrue);
+
+    // 3. Create a dynamic subcategory assigned under Gourmet Organic
+    final newSubcategory = await SupabaseService().createSubcategory(
+      categoryId: newCategory.id,
+      name: 'Organic Honey',
+      slug: 'organic-honey',
+      displayOrder: 1,
+      isActive: true,
+    );
+    expect(newSubcategory.name, 'Organic Honey');
+    expect(newSubcategory.categoryId, newCategory.id);
+
+    // 4. Verify subcategories for this category
+    final subs = await SupabaseService().getSubcategories(categoryId: newCategory.id);
+    expect(subs.any((s) => s.name == 'Organic Honey'), isTrue);
+
+    // 5. Toggle subcategory status to inactive
+    await SupabaseService().toggleSubcategoryStatus(newSubcategory.id, false);
+    final activeSubs = await SupabaseService().getSubcategories(categoryId: newCategory.id, includeInactive: false);
+    expect(activeSubs.any((s) => s.name == 'Organic Honey'), isFalse);
+
+    // 6. Toggle category status to inactive
+    await SupabaseService().toggleCategoryStatus(newCategory.id, false);
+    final activeCategories = await SupabaseService().getCategories();
+    expect(activeCategories.any((c) => c.name == 'Gourmet Organic'), isFalse);
+
+    // 7. Pump AdminCategoriesScreen and verify UI renders
+    await tester.pumpWidget(
+      const MaterialApp(
+        home: Scaffold(
+          body: AdminCategoriesScreen(),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('Category & Subcategory Management'), findsOneWidget);
+    expect(find.text('Add Category'), findsOneWidget);
+
+    // Clean up
     await tester.pumpWidget(const SizedBox());
     await tester.pump();
   });

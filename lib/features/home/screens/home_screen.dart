@@ -87,11 +87,16 @@ class _HomeScreenState extends State<HomeScreen> {
 
     // Listen to real-time order state updates across tabs
     SupabaseService().ordersNotifier.addListener(_onOrdersNotifierChanged);
+    SupabaseService().categoriesNotifier.addListener(_onCategoriesNotifierChanged);
 
-    // Cross-tab sync timer: periodically polls shared storage when user is on Orders tab
+    // Cross-tab sync timer: periodically polls shared storage for real-time updates
     _ordersSyncTimer = Timer.periodic(const Duration(milliseconds: 1500), (_) {
-      if (mounted && _currentNavIndex == 3) {
-        _loadUserOrders(silent: true);
+      if (mounted) {
+        if (_currentNavIndex == 3) {
+          _loadUserOrders(silent: true);
+        } else if (_currentNavIndex == 0 || _currentNavIndex == 1) {
+          _loadCategories(silent: true);
+        }
       }
     });
 
@@ -119,6 +124,19 @@ class _HomeScreenState extends State<HomeScreen> {
   void _onOrdersNotifierChanged() {
     if (mounted) {
       _loadUserOrders(silent: true);
+    }
+  }
+
+  void _onCategoriesNotifierChanged() {
+    if (mounted) {
+      _loadCategories(silent: true);
+    }
+  }
+
+  Future<void> _loadCategories({bool silent = false}) async {
+    final categories = await SupabaseService().getCategories();
+    if (mounted) {
+      setState(() => _categories = categories);
     }
   }
 
@@ -199,6 +217,7 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void dispose() {
     SupabaseService().ordersNotifier.removeListener(_onOrdersNotifierChanged);
+    SupabaseService().categoriesNotifier.removeListener(_onCategoriesNotifierChanged);
     _ordersSyncTimer?.cancel();
     _authSubscription?.cancel();
     _bannerTimer?.cancel();
