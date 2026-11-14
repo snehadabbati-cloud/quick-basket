@@ -76,6 +76,7 @@ class ProductModel {
   final String name;
   final String brand;
   final String categoryId;
+  final String? subcategoryId;
   final String description;
   final String imageUrl;
   final List<String> additionalImages;
@@ -90,6 +91,7 @@ class ProductModel {
     required this.name,
     required this.brand,
     required this.categoryId,
+    this.subcategoryId,
     required this.description,
     required this.imageUrl,
     this.additionalImages = const [],
@@ -117,6 +119,7 @@ class ProductModel {
       name: json['name'] as String,
       brand: json['brand'] as String? ?? 'Quick Basket',
       categoryId: json['category_id'] as String,
+      subcategoryId: json['subcategory_id'] as String?,
       description: json['description'] as String? ?? '',
       imageUrl: json['image_url'] as String? ?? '',
       additionalImages: (json['additional_images'] as List<dynamic>?)
@@ -140,6 +143,7 @@ class ProductModel {
       'name': name,
       'brand': brand,
       'category_id': categoryId,
+      'subcategory_id': subcategoryId,
       'description': description,
       'image_url': imageUrl,
       'additional_images': additionalImages,
@@ -156,6 +160,7 @@ class ProductModel {
     String? name,
     String? brand,
     String? categoryId,
+    String? subcategoryId,
     String? description,
     String? imageUrl,
     List<String>? additionalImages,
@@ -170,6 +175,7 @@ class ProductModel {
       name: name ?? this.name,
       brand: brand ?? this.brand,
       categoryId: categoryId ?? this.categoryId,
+      subcategoryId: subcategoryId ?? this.subcategoryId,
       description: description ?? this.description,
       imageUrl: imageUrl ?? this.imageUrl,
       additionalImages: additionalImages ?? this.additionalImages,

@@ -6,6 +6,7 @@ import '../../../services/supabase_service.dart';
 import '../../../shared_widgets/responsive_wrapper.dart';
 import '../widgets/admin_order_details_dialog.dart';
 import 'admin_inventory_screen.dart';
+import 'admin_categories_screen.dart';
 import 'admin_login_screen.dart';
 
 /// Dark Store Operations Command Center conforming to PRD Section 6
@@ -284,6 +285,19 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
             icon: const Icon(Icons.shopping_bag_outlined, color: Colors.white, size: 18),
             label: const Text(
               'Customer App',
+              style: TextStyle(color: Colors.white, fontWeight: FontWeight.w800),
+            ),
+          ),
+          TextButton.icon(
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const AdminCategoriesScreen()),
+              );
+            },
+            icon: const Icon(Icons.category_outlined, color: Colors.white, size: 18),
+            label: const Text(
+              'Categories',
               style: TextStyle(color: Colors.white, fontWeight: FontWeight.w800),
             ),
           ),

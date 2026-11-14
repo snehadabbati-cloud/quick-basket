@@ -25,7 +25,7 @@ class CategoryModel {
   factory CategoryModel.fromJson(Map<String, dynamic> json) {
     return CategoryModel(
       id: json['id'] as String,
-      name: json['name'] as String,
+      name: json['name'] as String? ?? '',
       slug: json['slug'] as String? ?? '',
       imageUrl: json['image_url'] as String?,
       iconName: json['icon_name'] as String?,
@@ -51,5 +51,29 @@ class CategoryModel {
       'is_active': isActive,
       'subcategories': subcategories,
     };
+  }
+
+  CategoryModel copyWith({
+    String? id,
+    String? name,
+    String? slug,
+    String? imageUrl,
+    String? iconName,
+    String? colorHex,
+    int? displayOrder,
+    bool? isActive,
+    List<String>? subcategories,
+  }) {
+    return CategoryModel(
+      id: id ?? this.id,
+      name: name ?? this.name,
+      slug: slug ?? this.slug,
+      imageUrl: imageUrl ?? this.imageUrl,
+      iconName: iconName ?? this.iconName,
+      colorHex: colorHex ?? this.colorHex,
+      displayOrder: displayOrder ?? this.displayOrder,
+      isActive: isActive ?? this.isActive,
+      subcategories: subcategories ?? this.subcategories,
+    );
   }
 }
