@@ -3,10 +3,10 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:quick_basket/main.dart';
 import 'package:quick_basket/core/constants/app_strings.dart';
-import 'package:quick_basket/shared_widgets/responsive_wrapper.dart';
 import 'package:quick_basket/features/home/screens/home_screen.dart';
 import 'package:quick_basket/features/order/screens/order_tracking_screen.dart';
 import 'package:quick_basket/features/admin/screens/admin_categories_screen.dart';
+import 'package:quick_basket/features/admin/screens/admin_dashboard_screen.dart';
 import 'package:quick_basket/services/supabase_service.dart';
 import 'package:quick_basket/models/order_model.dart';
 
@@ -14,106 +14,139 @@ void main() {
   setUp(() {
     SharedPreferences.setMockInitialValues({});
   });
-  testWidgets('Quick Basket full smoke test with non-zero height', (WidgetTester tester) async {
-    // Set a realistic screen size (desktop web: 1200x800)
-    tester.view.physicalSize = const Size(1200, 800);
+
+  void useSize(WidgetTester tester, Size size) {
+    tester.view.physicalSize = size;
     tester.view.devicePixelRatio = 1.0;
     addTearDown(() => tester.view.resetPhysicalSize());
+  }
 
-    await tester.pumpWidget(const QuickBasketApp());
+  testWidgets('Mobile storefront smoke test with bottom navigation', (WidgetTester tester) async {
+    useSize(tester, const Size(390, 844));
+
+    await tester.pumpWidget(const QuickBasketApp(useGoogleFonts: false));
     await tester.pump();
 
-    // Verify non-zero size for ListView
+    // Home list renders with real height
     final listViews = find.byType(ListView);
     expect(listViews, findsWidgets);
-    final homeListSize = tester.getSize(listViews.first);
-    debugPrint('Verified Home ListView size: $homeListSize');
-    expect(homeListSize.height, greaterThan(100.0));
+    expect(tester.getSize(listViews.first).height, greaterThan(100.0));
 
-    // Verify exploreCategories is visible
+    // Header + sections from the approved design
+    expect(find.text('12 minutes'), findsOneWidget);
     expect(find.text(AppStrings.exploreCategories), findsOneWidget);
 
-    // Drag up to reveal Popular Products in the ListView
-    await tester.drag(find.byType(ListView).first, const Offset(0, -300));
+    // Scroll to reveal product rails
+    await tester.drag(find.byType(ListView).first, const Offset(0, -600));
     await tester.pumpAndSettle();
-    expect(find.text(AppStrings.popularProducts), findsOneWidget);
+    expect(find.text(AppStrings.dealsAndDiscounts), findsOneWidget);
 
-    // Verify tapping Profile tab in bottom navigation switches tab to Profile
-    final profileTabFinder = find.text(AppStrings.navProfile);
-    expect(profileTabFinder, findsOneWidget);
-    await tester.tap(profileTabFinder);
+    // Profile tab shows the guest login card
+    await tester.tap(find.text(AppStrings.navProfile));
     await tester.pumpAndSettle();
-
-    // Profile tab should show login / sign up card
     expect(find.text('Login or Sign Up'), findsOneWidget);
     expect(find.text('Login with Mobile Number'), findsOneWidget);
 
-    // Tap back to Home tab
-    final homeTabFinder = find.text(AppStrings.navHome);
-    expect(homeTabFinder, findsOneWidget);
-    await tester.tap(homeTabFinder);
+    // Categories tab shows grouped categories
+    await tester.tap(find.text(AppStrings.navCategories));
     await tester.pumpAndSettle();
+    expect(find.text('All Categories'), findsOneWidget);
 
+    // Cart tab empty state
+    await tester.tap(find.text(AppStrings.navCart));
+    await tester.pumpAndSettle();
+    expect(find.text('Your cart is empty'), findsOneWidget);
+
+    // Orders tab
+    await tester.tap(find.text(AppStrings.navOrders));
+    await tester.pumpAndSettle();
+    expect(find.text('My Orders'), findsOneWidget);
+
+    // Back to Home
+    await tester.tap(find.text(AppStrings.navHome));
+    await tester.pumpAndSettle();
     expect(find.text(AppStrings.exploreCategories), findsOneWidget);
 
-    // Tap Orders tab
-    final ordersTabFinder = find.text(AppStrings.navOrders);
-    expect(ordersTabFinder, findsOneWidget);
-    await tester.tap(ordersTabFinder);
-    await tester.pumpAndSettle();
+    await tester.pumpWidget(const SizedBox());
+    await tester.pump();
+  });
 
-    // Verify Orders tab rendered
-    expect(find.byType(ListView), findsWidgets);
+  testWidgets('Desktop storefront uses header navigation and adds to cart', (WidgetTester tester) async {
+    useSize(tester, const Size(1440, 900));
+
+    await tester.pumpWidget(const QuickBasketApp(useGoogleFonts: false));
+    await tester.pump();
+
+    // Desktop header (no bottom navigation)
+    expect(find.text('Delivery in 12 minutes'), findsWidgets);
+    expect(find.text('Account'), findsOneWidget);
+    expect(find.text('My cart'), findsOneWidget);
+
+    // Add the first product to the cart; header cart button updates
+    await tester.ensureVisible(find.text('ADD').first);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('ADD').first);
+    await tester.pumpAndSettle();
+    expect(find.text('1 item'), findsOneWidget);
+
+    // Cart button opens the desktop checkout
+    await tester.tap(find.text('1 item'));
+    await tester.pumpAndSettle();
+    expect(find.text('Checkout'), findsOneWidget);
+    expect(find.text('Delivery address'), findsOneWidget);
+    expect(find.text('Payment method'), findsOneWidget);
+
+    // Account opens profile
+    await tester.tap(find.text('Account'));
+    await tester.pumpAndSettle();
+    expect(find.text('Login or Sign Up'), findsOneWidget);
+
+    await tester.pumpWidget(const SizedBox());
+    await tester.pump();
   });
 
   testWidgets('Admin Login Screen smoke test', (WidgetTester tester) async {
-    tester.view.physicalSize = const Size(1200, 800);
-    tester.view.devicePixelRatio = 1.0;
-    addTearDown(() => tester.view.resetPhysicalSize());
+    useSize(tester, const Size(1200, 800));
 
-    await tester.pumpWidget(const QuickBasketApp());
-    await tester.pumpAndSettle();
+    await tester.pumpWidget(const QuickBasketApp(useGoogleFonts: false));
+    await tester.pump();
 
-    // Navigate to /admin
     final BuildContext context = tester.element(find.byType(HomeScreen));
     Navigator.pushNamed(context, '/admin');
     await tester.pumpAndSettle();
 
-    expect(find.text('Quick Basket Operations'), findsOneWidget);
-    expect(find.text('Dark Store Manager & Staff Portal'), findsOneWidget);
-    expect(find.text('1-Tap Demo Manager Login'), findsOneWidget);
+    expect(find.text('STORE STAFF PORTAL'), findsOneWidget);
+    expect(find.text('Sign in to dashboard'), findsOneWidget);
+    expect(find.text('Use demo manager account'), findsOneWidget);
+
+    await tester.pumpWidget(const SizedBox());
+    await tester.pump();
   });
 
   testWidgets('Real-time order status tracking reacts to SupabaseService update', (WidgetTester tester) async {
-    tester.view.physicalSize = const Size(1200, 800);
-    tester.view.devicePixelRatio = 1.0;
-    addTearDown(() => tester.view.resetPhysicalSize());
+    useSize(tester, const Size(390, 844));
 
     // 1. Ensure sample orders are seeded
     await SupabaseService().getUserOrders('test-user');
+    await SupabaseService().updateOrderStatus('#QB-93108', OrderStatus.outForDelivery);
     final activeOrder = SupabaseService().getOrderById('#QB-93108');
     expect(activeOrder, isNotNull);
 
     // 2. Pump OrderTrackingScreen
-    await tester.pumpWidget(
-      MaterialApp(
-        home: OrderTrackingScreen(order: activeOrder!),
-      ),
-    );
+    await tester.pumpWidget(MaterialApp(home: OrderTrackingScreen(order: activeOrder!)));
     await tester.pump();
 
     // Verify initial status
     expect(find.text('Order #QB-93108'), findsOneWidget);
-    expect(find.text('Delivery Verification OTP'), findsOneWidget);
+    expect(find.text('Delivery OTP'), findsOneWidget);
 
     // 3. Simulate Store Manager updating order status to Delivered
     await SupabaseService().updateOrderStatus('#QB-93108', OrderStatus.delivered);
     await tester.pump(const Duration(milliseconds: 200));
 
-    // 4. Verify tracking screen reactively transitioned to Delivered celebration state
-    expect(find.text('Order Delivered!'), findsOneWidget);
-    expect(find.text('VERIFIED'), findsOneWidget);
-    expect(find.text('Order delivered! Enjoy your fresh groceries 🎉'), findsOneWidget);
+    // 4. Tracking screen reacts: delivered headline, OTP card removed
+    expect(find.text('Delivered — enjoy!'), findsOneWidget);
+    expect(find.text('Delivery OTP'), findsNothing);
 
     // 5. Clean up timers by unmounting widget
     await tester.pumpWidget(const SizedBox());
@@ -121,46 +154,73 @@ void main() {
   });
 
   testWidgets('Customer Orders tab updates in real-time when admin marks order delivered', (WidgetTester tester) async {
-    tester.view.physicalSize = const Size(1200, 800);
-    tester.view.devicePixelRatio = 1.0;
-    addTearDown(() => tester.view.resetPhysicalSize());
+    useSize(tester, const Size(390, 844));
 
     // 1. Seed orders so #QB-93108 is outForDelivery
     await SupabaseService().updateOrderStatus('#QB-93108', OrderStatus.outForDelivery);
 
-    await tester.pumpWidget(const QuickBasketApp());
-    await tester.pumpAndSettle();
+    await tester.pumpWidget(const QuickBasketApp(useGoogleFonts: false));
+    await tester.pump();
 
     // 2. Tap Orders tab
-    final ordersTabFinder = find.text(AppStrings.navOrders);
-    await tester.tap(ordersTabFinder);
+    await tester.tap(find.text(AppStrings.navOrders));
     await tester.pumpAndSettle();
 
-    // 3. Verify Live Order banner is initially visible
-    expect(find.text('Live Order in Progress!'), findsOneWidget);
-    expect(find.text('Track Live'), findsOneWidget);
+    // 3. Active order shows a Track order action
+    expect(find.text('Track order'), findsOneWidget);
 
     // 4. Admin marks order delivered (across tabs / backend)
     await SupabaseService().updateOrderStatus('#QB-93108', OrderStatus.delivered);
     await tester.pump(const Duration(milliseconds: 300));
     await tester.pumpAndSettle();
 
-    // 5. Verify Live Order banner has disappeared completely (Blinkit flow)
-    expect(find.text('Live Order in Progress!'), findsNothing);
-    expect(find.text('Track Live'), findsNothing);
-
-    // 6. Verify order card displays Delivered status
+    // 5. Track action disappears; card shows Delivered + Reorder
+    expect(find.text('Track order'), findsNothing);
     expect(find.text('Delivered'), findsWidgets);
+    expect(find.text('Reorder'), findsWidgets);
 
-    // 7. Clean up
+    await tester.pumpWidget(const SizedBox());
+    await tester.pump();
+  });
+
+  testWidgets('Admin Live Orders board gives clear feedback and supports undo', (WidgetTester tester) async {
+    useSize(tester, const Size(1440, 1000));
+
+    await SupabaseService().getAllStoreOrders();
+    await SupabaseService().updateOrderStatus('#QB-93108', OrderStatus.placed);
+
+    await tester.pumpWidget(MaterialApp(
+      home: AdminDashboardScreen(
+        managerData: const {'name': 'Store Manager', 'email': 'manager@quickbasket.com'},
+      ),
+    ));
+    await tester.pumpAndSettle();
+
+    // Open the Live Orders board from the sidebar
+    await tester.tap(find.text('Live Orders').first);
+    await tester.pumpAndSettle();
+    expect(find.text('New orders'), findsOneWidget);
+
+    // Accept the new order
+    await tester.tap(find.text('Accept order').first);
+    await tester.pumpAndSettle();
+
+    // Clear feedback: banner, highlighted card, next-step hint
+    expect(find.text('Order #QB-93108 accepted'), findsOneWidget);
+    expect(find.text('Just accepted'), findsOneWidget);
+    expect(SupabaseService().getOrderById('#QB-93108')!.status, OrderStatus.confirmed);
+
+    // Undo returns the order to New orders
+    await tester.tap(find.text('Undo'));
+    await tester.pumpAndSettle();
+    expect(SupabaseService().getOrderById('#QB-93108')!.status, OrderStatus.placed);
+
     await tester.pumpWidget(const SizedBox());
     await tester.pump();
   });
 
   testWidgets('Dynamic Category & Subcategory CRUD and Admin Categories Screen test', (WidgetTester tester) async {
-    tester.view.physicalSize = const Size(1200, 800);
-    tester.view.devicePixelRatio = 1.0;
-    addTearDown(() => tester.view.resetPhysicalSize());
+    useSize(tester, const Size(1200, 800));
 
     // 1. Create a dynamic category via SupabaseService
     final newCategory = await SupabaseService().createCategory(
@@ -202,20 +262,14 @@ void main() {
     final activeCategories = await SupabaseService().getCategories();
     expect(activeCategories.any((c) => c.name == 'Gourmet Organic'), isFalse);
 
-    // 7. Pump AdminCategoriesScreen and verify UI renders
-    await tester.pumpWidget(
-      const MaterialApp(
-        home: Scaffold(
-          body: AdminCategoriesScreen(),
-        ),
-      ),
-    );
+    // 7. Pump AdminCategoriesScreen and verify the master-detail UI renders
+    await tester.pumpWidget(const MaterialApp(home: Scaffold(body: AdminCategoriesScreen(embedded: true))));
     await tester.pumpAndSettle();
 
-    expect(find.text('Category & Subcategory Management'), findsOneWidget);
+    expect(find.text('Categories & Subcategories'), findsOneWidget);
     expect(find.text('Add Category'), findsOneWidget);
+    expect(find.text('Add Subcategory'), findsOneWidget);
 
-    // Clean up
     await tester.pumpWidget(const SizedBox());
     await tester.pump();
   });

@@ -30,6 +30,22 @@ class SupabaseService {
   /// Reactive notifier for real-time category & subcategory updates across customer & admin screens
   final ValueNotifier<int> categoriesNotifier = ValueNotifier<int>(0);
 
+  /// Products a store manager has switched off ("In store" toggle in the
+  /// admin Products page). The customer storefront hides these.
+  final ValueNotifier<Set<String>> hiddenProductIds = ValueNotifier<Set<String>>({});
+
+  void setProductVisibility(String productId, bool visible) {
+    final next = Set<String>.from(hiddenProductIds.value);
+    if (visible) {
+      next.remove(productId);
+    } else {
+      next.add(productId);
+    }
+    hiddenProductIds.value = next;
+  }
+
+  bool isProductVisible(String productId) => !hiddenProductIds.value.contains(productId);
+
   void notifyCategoriesChanged() {
     categoriesNotifier.value++;
   }
