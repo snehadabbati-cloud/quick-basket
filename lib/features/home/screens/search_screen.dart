@@ -5,6 +5,7 @@ import '../../../models/cart_item_model.dart';
 import '../../../shared_widgets/product_card.dart';
 import '../../../shared_widgets/product_details_sheet.dart';
 import '../../../shared_widgets/responsive_wrapper.dart';
+import '../widgets/storefront_chrome.dart';
 
 /// Instant Search Screen conforming to PRD Section 4.7
 class SearchScreen extends StatefulWidget {
@@ -134,68 +135,16 @@ class _SearchScreenState extends State<SearchScreen> {
 
               // Floating Mini-Cart Summary
               if (_totalCartItems > 0)
-                Container(
-                  margin: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                  decoration: BoxDecoration(
-                    color: AppColors.primary,
-                    borderRadius: BorderRadius.circular(14),
-                    boxShadow: [
-                      BoxShadow(
-                        color: AppColors.primary.withValues(alpha: 0.35),
-                        blurRadius: 10,
-                        offset: const Offset(0, 4),
-                      ),
-                    ],
-                  ),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Text(
-                            '$_totalCartItems ${_totalCartItems == 1 ? 'ITEM' : 'ITEMS'}',
-                            style: TextStyle(
-                              color: Colors.white.withValues(alpha: 0.85),
-                              fontSize: 10,
-                              fontWeight: FontWeight.w700,
-                              letterSpacing: 0.5,
-                            ),
-                          ),
-                          Text(
-                            '₹${_totalCartPrice.toStringAsFixed(0)}',
-                            style: const TextStyle(
-                              color: Colors.white,
-                              fontSize: 16,
-                              fontWeight: FontWeight.w800,
-                            ),
-                          ),
-                        ],
-                      ),
-                      InkWell(
-                        onTap: () {
-                          Navigator.pop(context);
-                          widget.onViewCart();
-                        },
-                        child: const Row(
-                          children: [
-                            Text(
-                              'View Cart',
-                              style: TextStyle(
-                                color: Colors.white,
-                                fontWeight: FontWeight.w800,
-                                fontSize: 14,
-                              ),
-                            ),
-                            SizedBox(width: 4),
-                            Icon(Icons.arrow_forward_ios_rounded, color: Colors.white, size: 14),
-                          ],
-                        ),
-                      ),
-                    ],
-                  ),
+                CartFloatingBar(
+                  itemCount: _totalCartItems,
+                  total: _totalCartPrice,
+                  subtitle: _totalCartPrice >= 199
+                      ? 'Free delivery unlocked'
+                      : 'Add ₹${(199 - _totalCartPrice).toStringAsFixed(0)} for free delivery',
+                  onTap: () {
+                    Navigator.popUntil(context, (route) => route.isFirst);
+                    widget.onViewCart();
+                  },
                 ),
             ],
           ),
@@ -300,40 +249,33 @@ class _SearchScreenState extends State<SearchScreen> {
           ),
         ),
         Expanded(
-          child: LayoutBuilder(
-            builder: (context, constraints) {
-              final crossAxisCount = constraints.maxWidth >= 900
-                  ? 4
-                  : (constraints.maxWidth >= 600 ? 3 : 2);
-              return GridView.builder(
-                padding: const EdgeInsets.all(16),
-                physics: const BouncingScrollPhysics(),
-                gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                  crossAxisCount: crossAxisCount,
-                  childAspectRatio: 0.70,
-                  crossAxisSpacing: 12,
-                  mainAxisSpacing: 12,
-                ),
-                itemCount: results.length,
-                itemBuilder: (context, index) {
-                  final product = results[index];
-                  return ProductCard(
+          child: GridView.builder(
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+            physics: const BouncingScrollPhysics(),
+            gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
+              maxCrossAxisExtent: 220,
+              mainAxisExtent: 262,
+              crossAxisSpacing: 12,
+              mainAxisSpacing: 12,
+            ),
+            itemCount: results.length,
+            itemBuilder: (context, index) {
+              final product = results[index];
+              return ProductCard(
+                product: product,
+                cartQuantity: _getCartQuantity(product.id),
+                onAddToCart: () => setState(() => widget.onAddToCart(product, product.defaultVariant)),
+                onIncrement: () => setState(() => widget.onIncrement(product.id)),
+                onDecrement: () => setState(() => widget.onDecrement(product.id)),
+                onTap: () {
+                  ProductDetailsSheet.show(
+                    context,
                     product: product,
-                    cartQuantity: _getCartQuantity(product.id),
-                    onAddToCart: () => widget.onAddToCart(product, product.defaultVariant),
-                    onIncrement: () => widget.onIncrement(product.id),
-                    onDecrement: () => widget.onDecrement(product.id),
-                    onTap: () {
-                      ProductDetailsSheet.show(
-                        context,
-                        product: product,
-                        initialQuantity: _getCartQuantity(product.id),
-                        onAddToCart: (p, v) => widget.onAddToCart(p, v),
-                        onIncrement: (p, v) => widget.onIncrement(p.id),
-                        onDecrement: (p, v) => widget.onDecrement(p.id),
-                      );
-                    },
-                  );
+                    initialQuantity: _getCartQuantity(product.id),
+                    onAddToCart: (p, v) => widget.onAddToCart(p, v),
+                    onIncrement: (p, v) => widget.onIncrement(p.id),
+                    onDecrement: (p, v) => widget.onDecrement(p.id),
+                  ).then((_) => setState(() {}));
                 },
               );
             },

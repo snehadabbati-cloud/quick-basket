@@ -1,112 +1,74 @@
 import 'package:flutter/material.dart';
 import '../core/constants/app_colors.dart';
 import '../models/category_model.dart';
+import 'qb_ui.dart';
 
-/// Category Item Card for Home Category Grid (PRD Section 4.4)
+/// Category tile for category grids (PRD Section 4.4)
+///
+/// Square tinted tile with the category glyph and its name underneath.
+/// When [size] is null the tile stretches to the available width.
 class CategoryItem extends StatelessWidget {
   final CategoryModel category;
   final VoidCallback? onTap;
+  final double? size;
+  final double radius;
+  final double fontSize;
+  final bool showLabel;
 
   const CategoryItem({
     super.key,
     required this.category,
     this.onTap,
+    this.size = 64,
+    this.radius = 18,
+    this.fontSize = 11.5,
+    this.showLabel = true,
   });
-
-  IconData _getCategoryIcon(String? iconName) {
-    switch (iconName) {
-      case 'eco':
-        return Icons.eco_rounded;
-      case 'egg':
-        return Icons.egg_rounded;
-      case 'grain':
-        return Icons.grain_rounded;
-      case 'fastfood':
-        return Icons.fastfood_rounded;
-      case 'local_drink':
-        return Icons.local_drink_rounded;
-      case 'breakfast_dining':
-        return Icons.breakfast_dining_rounded;
-      case 'ramen_dining':
-        return Icons.ramen_dining_rounded;
-      case 'coffee':
-        return Icons.coffee_rounded;
-      case 'cake':
-        return Icons.cake_rounded;
-      case 'bakery_dining':
-        return Icons.bakery_dining_rounded;
-      case 'spa':
-        return Icons.spa_rounded;
-      case 'child_care':
-        return Icons.child_care_rounded;
-      case 'home':
-        return Icons.home_rounded;
-      case 'cleaning_services':
-        return Icons.cleaning_services_rounded;
-      case 'pets':
-        return Icons.pets_rounded;
-      default:
-        return Icons.shopping_basket_rounded;
-    }
-  }
-
-  Color _parseColor(String? hexString) {
-    if (hexString == null || hexString.isEmpty) return AppColors.primaryLight;
-    try {
-      final buffer = StringBuffer();
-      if (hexString.length == 6 || hexString.length == 7) buffer.write('ff');
-      buffer.write(hexString.replaceFirst('#', ''));
-      return Color(int.parse(buffer.toString(), radix: 16));
-    } catch (_) {
-      return AppColors.primaryLight;
-    }
-  }
 
   @override
   Widget build(BuildContext context) {
-    final bgColor = _parseColor(category.colorHex);
+    final visual = CategoryVisual.of(category);
+
+    final tile = LayoutBuilder(
+      builder: (context, constraints) {
+        final side = size ?? constraints.maxWidth;
+        return Container(
+          width: side,
+          height: side,
+          decoration: BoxDecoration(
+            color: visual.tint,
+            borderRadius: BorderRadius.circular(radius),
+            border: Border.all(color: AppColors.textPrimary.withValues(alpha: 0.04)),
+          ),
+          clipBehavior: Clip.antiAlias,
+          child: category.imageUrl != null && category.imageUrl!.startsWith('http')
+              ? Image.network(
+                  category.imageUrl!,
+                  fit: BoxFit.cover,
+                  errorBuilder: (_, _, _) => Icon(visual.icon, color: visual.ink, size: side * 0.48),
+                )
+              : Icon(visual.icon, color: visual.ink, size: side * 0.48),
+        );
+      },
+    );
 
     return InkWell(
       onTap: onTap,
-      borderRadius: BorderRadius.circular(12),
+      borderRadius: BorderRadius.circular(radius),
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Container(
-            width: 64,
-            height: 64,
-            decoration: BoxDecoration(
-              color: bgColor,
-              borderRadius: BorderRadius.circular(16),
-              border: Border.all(
-                color: Colors.black.withValues(alpha: 0.04),
-                width: 1,
-              ),
-            ),
-            child: Center(
-              child: Icon(
-                _getCategoryIcon(category.iconName),
-                color: AppColors.primary,
-                size: 32,
-              ),
-            ),
-          ),
-          const SizedBox(height: 6),
-          SizedBox(
-            width: 72,
-            child: Text(
+          if (size == null) AspectRatio(aspectRatio: 1, child: tile) else tile,
+          if (showLabel) ...[
+            const SizedBox(height: 6),
+            Text(
               category.name,
               textAlign: TextAlign.center,
               maxLines: 2,
               overflow: TextOverflow.ellipsis,
-              style: const TextStyle(
-                fontSize: 11,
-                fontWeight: FontWeight.w600,
-                color: AppColors.textPrimary,
-                height: 1.2,
-              ),
+              style: TextStyle(fontSize: fontSize, fontWeight: FontWeight.w600, height: 1.25),
             ),
-          ),
+          ],
         ],
       ),
     );

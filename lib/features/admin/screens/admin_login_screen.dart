@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import '../../../core/constants/app_colors.dart';
 import '../../../services/supabase_service.dart';
-import '../../../shared_widgets/responsive_wrapper.dart';
+import '../../../shared_widgets/qb_ui.dart';
 import 'admin_dashboard_screen.dart';
 
 /// Store Manager Staff Authentication Screen conforming to PRD Section 5.1 & 6.
@@ -18,6 +18,7 @@ class _AdminLoginScreenState extends State<AdminLoginScreen> {
   final _passwordController = TextEditingController();
   bool _isLoading = false;
   bool _obscurePassword = true;
+  bool _keepSignedIn = true;
   String? _errorMessage;
 
   @override
@@ -66,245 +67,296 @@ class _AdminLoginScreenState extends State<AdminLoginScreen> {
     }
   }
 
+  void _goBack() {
+    if (Navigator.canPop(context)) {
+      Navigator.pop(context);
+    } else {
+      Navigator.pushReplacementNamed(context, '/');
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
+    final wide = Responsive.width(context) >= 900;
+    final form = _buildForm();
+
+    if (wide) {
+      return Scaffold(
+        backgroundColor: Colors.white,
+        body: Row(
+          children: [
+            const Expanded(child: _BrandPanel()),
+            Expanded(
+              child: Stack(
+                children: [
+                  Center(
+                    child: SingleChildScrollView(
+                      padding: const EdgeInsets.all(48),
+                      child: ConstrainedBox(constraints: const BoxConstraints(maxWidth: 400), child: form),
+                    ),
+                  ),
+                  Positioned(
+                    top: 20,
+                    left: 20,
+                    child: TextButton.icon(
+                      onPressed: _goBack,
+                      icon: const Icon(Icons.chevron_left_rounded),
+                      label: const Text('Back to store'),
+                      style: TextButton.styleFrom(foregroundColor: AppColors.textBody),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
     return Scaffold(
-      backgroundColor: const Color(0xFFF0F4F2),
-      appBar: AppBar(
-        backgroundColor: Colors.transparent,
-        elevation: 0,
-        leading: IconButton(
-          icon: const Icon(Icons.arrow_back_rounded, color: AppColors.textPrimary),
-          onPressed: () {
-            if (Navigator.canPop(context)) {
-              Navigator.pop(context);
-            } else {
-              Navigator.pushReplacementNamed(context, '/');
-            }
-          },
+      backgroundColor: Colors.white,
+      body: SafeArea(
+        child: ListView(
+          children: [
+            Stack(
+              children: [
+                const SizedBox(height: 330, child: _BrandPanel(compact: true)),
+                Positioned(
+                  top: 8,
+                  left: 8,
+                  child: IconButton(
+                    tooltip: 'Back',
+                    onPressed: _goBack,
+                    icon: const Icon(Icons.chevron_left_rounded, color: Colors.white, size: 30),
+                  ),
+                ),
+              ],
+            ),
+            Padding(padding: const EdgeInsets.fromLTRB(24, 28, 24, 32), child: form),
+          ],
         ),
       ),
-      body: Center(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 24),
-          child: ResponsiveWrapper(
-            maxWidth: 460,
-            child: Card(
-              elevation: 4,
-              shadowColor: Colors.black.withValues(alpha: 0.08),
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
-              child: Padding(
-                padding: const EdgeInsets.all(28),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    // Brand Logo & Badge
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Container(
-                          padding: const EdgeInsets.all(12),
-                          decoration: BoxDecoration(
-                            color: const Color(0xFF064E26),
-                            borderRadius: BorderRadius.circular(16),
-                          ),
-                          child: const Icon(
-                            Icons.storefront_rounded,
-                            size: 32,
-                            color: Colors.white,
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 16),
-                    const Text(
-                      'Quick Basket Operations',
-                      textAlign: TextAlign.center,
-                      style: TextStyle(
-                        fontSize: 22,
-                        fontWeight: FontWeight.w900,
-                        color: AppColors.textPrimary,
-                        letterSpacing: -0.5,
-                      ),
-                    ),
-                    const SizedBox(height: 4),
-                    const Text(
-                      'Dark Store Manager & Staff Portal',
-                      textAlign: TextAlign.center,
-                      style: TextStyle(
-                        fontSize: 13,
-                        color: AppColors.textSecondary,
-                        fontWeight: FontWeight.w500,
-                      ),
-                    ),
-                    const SizedBox(height: 24),
+    );
+  }
 
-                    // Error Box if any
-                    if (_errorMessage != null) ...[
-                      Container(
-                        padding: const EdgeInsets.all(12),
-                        decoration: BoxDecoration(
-                          color: const Color(0xFFFFEBEE),
-                          borderRadius: BorderRadius.circular(12),
-                          border: Border.all(color: AppColors.error.withValues(alpha: 0.3)),
-                        ),
-                        child: Row(
-                          children: [
-                            const Icon(Icons.error_outline_rounded, color: AppColors.error, size: 20),
-                            const SizedBox(width: 10),
-                            Expanded(
-                              child: Text(
-                                _errorMessage!,
-                                style: const TextStyle(
-                                  color: AppColors.error,
-                                  fontSize: 12,
-                                  fontWeight: FontWeight.w600,
-                                ),
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                      const SizedBox(height: 16),
-                    ],
-
-                    // Email Field
-                    const Text(
-                      'Staff Email Address',
-                      style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700),
-                    ),
-                    const SizedBox(height: 6),
-                    TextField(
-                      controller: _emailController,
-                      keyboardType: TextInputType.emailAddress,
-                      decoration: InputDecoration(
-                        hintText: 'manager@quickbasket.com',
-                        prefixIcon: const Icon(Icons.email_outlined, size: 20),
-                        filled: true,
-                        fillColor: const Color(0xFFF9FAFB),
-                        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-                        border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(12),
-                          borderSide: const BorderSide(color: Color(0xFFE5E7EB)),
-                        ),
-                        enabledBorder: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(12),
-                          borderSide: const BorderSide(color: Color(0xFFE5E7EB)),
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 16),
-
-                    // Password Field
-                    const Text(
-                      'Password',
-                      style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700),
-                    ),
-                    const SizedBox(height: 6),
-                    TextField(
-                      controller: _passwordController,
-                      obscureText: _obscurePassword,
-                      decoration: InputDecoration(
-                        hintText: 'Enter staff password',
-                        prefixIcon: const Icon(Icons.lock_outline_rounded, size: 20),
-                        suffixIcon: IconButton(
-                          icon: Icon(
-                            _obscurePassword ? Icons.visibility_outlined : Icons.visibility_off_outlined,
-                            size: 20,
-                          ),
-                          onPressed: () => setState(() => _obscurePassword = !_obscurePassword),
-                        ),
-                        filled: true,
-                        fillColor: const Color(0xFFF9FAFB),
-                        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-                        border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(12),
-                          borderSide: const BorderSide(color: Color(0xFFE5E7EB)),
-                        ),
-                        enabledBorder: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(12),
-                          borderSide: const BorderSide(color: Color(0xFFE5E7EB)),
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 24),
-
-                    // Sign In Button
-                    ElevatedButton(
-                      onPressed: _isLoading ? null : () => _handleStaffLogin(),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: const Color(0xFF064E26),
-                        foregroundColor: Colors.white,
-                        padding: const EdgeInsets.symmetric(vertical: 14),
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                        elevation: 0,
-                      ),
-                      child: _isLoading
-                          ? const SizedBox(
-                              height: 20,
-                              width: 20,
-                              child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2),
-                            )
-                          : const Text(
-                              'Sign In to Store Portal',
-                              style: TextStyle(fontSize: 15, fontWeight: FontWeight.w800),
-                            ),
-                    ),
-                    const SizedBox(height: 16),
-
-                    // Quick Demo Login Shortcut
-                    OutlinedButton.icon(
-                      onPressed: _isLoading
-                          ? null
-                          : () {
-                              _emailController.text = 'manager@quickbasket.com';
-                              _passwordController.text = 'admin123';
-                              _handleStaffLogin(
-                                prefillEmail: 'manager@quickbasket.com',
-                                prefillPass: 'admin123',
-                              );
-                            },
-                      icon: const Icon(Icons.bolt_rounded, color: Color(0xFF064E26), size: 18),
-                      label: const Text(
-                        '1-Tap Demo Manager Login',
-                        style: TextStyle(
-                          color: Color(0xFF064E26),
-                          fontWeight: FontWeight.w700,
-                          fontSize: 13,
-                        ),
-                      ),
-                      style: OutlinedButton.styleFrom(
-                        padding: const EdgeInsets.symmetric(vertical: 12),
-                        side: const BorderSide(color: Color(0xFF064E26), width: 1.2),
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                      ),
-                    ),
-                    const SizedBox(height: 20),
-
-                    // Security Notice
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        const Icon(Icons.shield_outlined, size: 14, color: AppColors.textSecondary),
-                        const SizedBox(width: 6),
-                        Text(
-                          'Protected by Supabase RBAC',
-                          style: TextStyle(
-                            fontSize: 11,
-                            color: Colors.grey.shade600,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
+  Widget _buildForm() {
+    return AutofillGroup(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          const Text('Sign in', style: TextStyle(fontSize: 26, fontWeight: FontWeight.w800, letterSpacing: -0.5)),
+          const SizedBox(height: 6),
+          const Text('Restricted to authorized Store Managers', style: TextStyle(fontSize: 14, color: AppColors.textSecondary)),
+          const SizedBox(height: 22),
+          const Text('Work email', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppColors.textBody)),
+          const SizedBox(height: 8),
+          TextField(
+            controller: _emailController,
+            keyboardType: TextInputType.emailAddress,
+            autofillHints: const [AutofillHints.email],
+            textInputAction: TextInputAction.next,
+            decoration: const InputDecoration(
+              hintText: 'manager@quickbasket.com',
+              contentPadding: EdgeInsets.symmetric(horizontal: 14, vertical: 16),
+            ),
+          ),
+          const SizedBox(height: 16),
+          const Text('Password', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppColors.textBody)),
+          const SizedBox(height: 8),
+          TextField(
+            controller: _passwordController,
+            obscureText: _obscurePassword,
+            autofillHints: const [AutofillHints.password],
+            onSubmitted: (_) => _handleStaffLogin(),
+            decoration: InputDecoration(
+              hintText: '••••••••',
+              contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 16),
+              suffixIcon: IconButton(
+                tooltip: _obscurePassword ? 'Show password' : 'Hide password',
+                onPressed: () => setState(() => _obscurePassword = !_obscurePassword),
+                icon: Icon(_obscurePassword ? Icons.visibility_outlined : Icons.visibility_off_outlined, size: 20),
               ),
             ),
           ),
-        ),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              Checkbox(
+                value: _keepSignedIn,
+                activeColor: AppColors.primary,
+                onChanged: (v) => setState(() => _keepSignedIn = v ?? true),
+              ),
+              const Expanded(
+                child: Text('Keep me signed in on this device', style: TextStyle(fontSize: 14, color: AppColors.textBody)),
+              ),
+              TextButton(
+                onPressed: () => ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('Ask your store administrator to reset your password')),
+                ),
+                child: const Text('Forgot?'),
+              ),
+            ],
+          ),
+          if (_errorMessage != null) ...[
+            const SizedBox(height: 6),
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: AppColors.errorLight,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: AppColors.errorBorder),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.error_outline_rounded, color: AppColors.error, size: 18),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(_errorMessage!,
+                        style: const TextStyle(color: AppColors.error, fontSize: 13, fontWeight: FontWeight.w600)),
+                  ),
+                ],
+              ),
+            ),
+          ],
+          const SizedBox(height: 14),
+          ElevatedButton(
+            onPressed: _isLoading ? null : () => _handleStaffLogin(),
+            style: ElevatedButton.styleFrom(
+              minimumSize: const Size.fromHeight(52),
+              textStyle: const TextStyle(fontSize: 15, fontWeight: FontWeight.w800),
+            ),
+            child: _isLoading
+                ? const SizedBox(width: 22, height: 22, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
+                : const Text('Sign in to dashboard'),
+          ),
+          const SizedBox(height: 10),
+          OutlinedButton.icon(
+            onPressed: _isLoading
+                ? null
+                : () {
+                    _emailController.text = 'manager@quickbasket.com';
+                    _passwordController.text = 'admin123';
+                    _handleStaffLogin(prefillEmail: 'manager@quickbasket.com', prefillPass: 'admin123');
+                  },
+            icon: const Icon(Icons.bolt_rounded, size: 18),
+            label: const Text('Use demo manager account'),
+            style: OutlinedButton.styleFrom(minimumSize: const Size.fromHeight(48)),
+          ),
+          const SizedBox(height: 16),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+            decoration: BoxDecoration(color: AppColors.adminBackground, borderRadius: BorderRadius.circular(12)),
+            child: const Row(
+              children: [
+                Icon(Icons.verified_user_outlined, color: AppColors.primary, size: 18),
+                SizedBox(width: 10),
+                Expanded(
+                  child: Text('Secured with Supabase Auth · role-based access',
+                      style: TextStyle(fontSize: 12, color: AppColors.textBody)),
+                ),
+              ],
+            ),
+          ),
+        ],
       ),
+    );
+  }
+}
+
+class _BrandPanel extends StatelessWidget {
+  final bool compact;
+  const _BrandPanel({this.compact = false});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      color: AppColors.primary,
+      child: Stack(
+        clipBehavior: Clip.hardEdge,
+        children: [
+          Positioned(
+            right: -200,
+            top: -160,
+            child: Container(width: 520, height: 520, decoration: const BoxDecoration(color: Color(0xFF0A7438), shape: BoxShape.circle)),
+          ),
+          Positioned(
+            left: -120,
+            bottom: -120,
+            child: Container(width: 300, height: 300, decoration: const BoxDecoration(color: Color(0xFF0A7438), shape: BoxShape.circle)),
+          ),
+          Padding(
+            padding: EdgeInsets.all(compact ? 28 : 48),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisAlignment: compact ? MainAxisAlignment.end : MainAxisAlignment.spaceBetween,
+              children: [
+                if (!compact) const QbLogo(size: 48, textColor: Colors.white),
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                      decoration: BoxDecoration(color: AppColors.accent, borderRadius: BorderRadius.circular(6)),
+                      child: const Text('STORE STAFF PORTAL',
+                          style: TextStyle(fontSize: 12, fontWeight: FontWeight.w800, letterSpacing: 0.7)),
+                    ),
+                    const SizedBox(height: 14),
+                    ConstrainedBox(
+                      constraints: const BoxConstraints(maxWidth: 460),
+                      child: Text(
+                        'Run your dark store from one screen.',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: compact ? 28 : 40,
+                          fontWeight: FontWeight.w800,
+                          letterSpacing: -1,
+                          height: 1.1,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    ConstrainedBox(
+                      constraints: const BoxConstraints(maxWidth: 460),
+                      child: Text(
+                        'Accept orders, pack faster, keep shelves stocked and see how the day is going — live.',
+                        style: TextStyle(color: Colors.white.withValues(alpha: 0.92), fontSize: compact ? 14 : 16, height: 1.55),
+                      ),
+                    ),
+                  ],
+                ),
+                if (!compact)
+                  const Wrap(
+                    spacing: 24,
+                    runSpacing: 8,
+                    children: [
+                      _Feature('Live order board'),
+                      _Feature('Inventory alerts'),
+                      _Feature('Catalog control'),
+                    ],
+                  ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _Feature extends StatelessWidget {
+  final String label;
+  const _Feature(this.label);
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        const Icon(Icons.check_rounded, color: Colors.white, size: 18),
+        const SizedBox(width: 8),
+        Text(label, style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w600)),
+      ],
     );
   }
 }

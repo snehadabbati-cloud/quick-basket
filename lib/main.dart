@@ -13,14 +13,17 @@ void main() async {
 
 /// Quick Basket Main Application Root conforming to PRD specifications
 class QuickBasketApp extends StatelessWidget {
-  const QuickBasketApp({super.key});
+  /// Set to false in widget tests to avoid runtime Google Fonts downloads.
+  final bool useGoogleFonts;
+
+  const QuickBasketApp({super.key, this.useGoogleFonts = true});
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
       title: AppStrings.appName,
       debugShowCheckedModeBanner: false,
-      theme: AppTheme.lightTheme,
+      theme: AppTheme.light(googleFonts: useGoogleFonts),
       initialRoute: '/',
       routes: {
         '/': (context) => const HomeScreen(),
