@@ -29,6 +29,19 @@ class _AdminInventoryScreenState extends State<AdminInventoryScreen> {
   void initState() {
     super.initState();
     _loadProducts();
+    SupabaseService().inventoryNotifier.addListener(_onInventoryChanged);
+  }
+
+  void _onInventoryChanged() {
+    if (mounted) {
+      _loadProducts();
+    }
+  }
+
+  @override
+  void dispose() {
+    SupabaseService().inventoryNotifier.removeListener(_onInventoryChanged);
+    super.dispose();
   }
 
   void _loadProducts() {

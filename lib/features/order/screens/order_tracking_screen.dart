@@ -122,6 +122,59 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen> {
   bool get _isDelivered => _currentStatus == OrderStatus.delivered;
   bool get _isCancelled => _currentStatus == OrderStatus.cancelled;
 
+  int get _cancellationSecondsLeft {
+    if (_currentStatus != OrderStatus.placed && _currentStatus != OrderStatus.confirmed) {
+      return 0;
+    }
+    final elapsed = DateTime.now().difference(_activeOrder.createdAt).inSeconds;
+    final left = 60 - elapsed;
+    return left > 0 ? left : 0;
+  }
+
+  bool get _canCancelOrder => _cancellationSecondsLeft > 0;
+
+  Future<void> _confirmCancelOrder() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: const Text('Cancel Order?', style: TextStyle(fontWeight: FontWeight.w800)),
+        content: const Text(
+          'Are you sure you want to cancel this order? Items will be refunded and restocked immediately.',
+          style: TextStyle(fontSize: 14, height: 1.4),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Keep order'),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: AppColors.error),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Yes, cancel order'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed == true && mounted) {
+      final success = await SupabaseService().cancelOrder(_activeOrder.id);
+      if (success && mounted) {
+        setState(() {
+          _currentStatus = OrderStatus.cancelled;
+          _activeOrder = _activeOrder.copyWith(status: OrderStatus.cancelled);
+          _remainingSeconds = 0;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Order $_orderNumber cancelled. Items restored to stock.'),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    }
+  }
+
   String get _orderNumber =>
       _activeOrder.orderNumber.startsWith('#') ? _activeOrder.orderNumber : '#${_activeOrder.orderNumber}';
 
@@ -296,6 +349,63 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
+                        if (_canCancelOrder) ...[
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFFFFF4F2),
+                              borderRadius: BorderRadius.circular(14),
+                              border: Border.all(color: const Color(0xFFFFCDD2)),
+                            ),
+                            child: Row(
+                              children: [
+                                const Icon(Icons.timer_outlined, color: AppColors.error, size: 20),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: Text(
+                                    'Cancel window closes in ${_cancellationSecondsLeft}s',
+                                    style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: Color(0xFFC62828)),
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                                ElevatedButton(
+                                  onPressed: _confirmCancelOrder,
+                                  style: ElevatedButton.styleFrom(
+                                    backgroundColor: AppColors.error,
+                                    foregroundColor: Colors.white,
+                                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                                    minimumSize: const Size(0, 32),
+                                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                                  ),
+                                  child: const Text('Cancel', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 12)),
+                                ),
+                              ],
+                            ),
+                          ),
+                          const SizedBox(height: 12),
+                        ] else if (_isCancelled) ...[
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFFFFF4F2),
+                              borderRadius: BorderRadius.circular(14),
+                              border: Border.all(color: const Color(0xFFFFCDD2)),
+                            ),
+                            child: const Row(
+                              children: [
+                                Icon(Icons.cancel_rounded, color: AppColors.error, size: 22),
+                                SizedBox(width: 10),
+                                Expanded(
+                                  child: Text(
+                                    'Order was cancelled. All items were returned to store stock.',
+                                    style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: Color(0xFFC62828)),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          const SizedBox(height: 12),
+                        ],
                         if (!_isCancelled) ...[
                           _riderCard(shadow: true),
                           const SizedBox(height: 12),
@@ -688,6 +798,63 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen> {
                                 child: Column(
                                   crossAxisAlignment: CrossAxisAlignment.stretch,
                                   children: [
+                                    if (_canCancelOrder) ...[
+                                      Container(
+                                        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                                        decoration: BoxDecoration(
+                                          color: const Color(0xFFFFF4F2),
+                                          borderRadius: BorderRadius.circular(14),
+                                          border: Border.all(color: const Color(0xFFFFCDD2)),
+                                        ),
+                                        child: Row(
+                                          children: [
+                                            const Icon(Icons.timer_outlined, color: AppColors.error, size: 20),
+                                            const SizedBox(width: 8),
+                                            Expanded(
+                                              child: Text(
+                                                'Cancel window closes in ${_cancellationSecondsLeft}s',
+                                                style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: Color(0xFFC62828)),
+                                              ),
+                                            ),
+                                            const SizedBox(width: 8),
+                                            ElevatedButton(
+                                              onPressed: _confirmCancelOrder,
+                                              style: ElevatedButton.styleFrom(
+                                                backgroundColor: AppColors.error,
+                                                foregroundColor: Colors.white,
+                                                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                                                minimumSize: const Size(0, 32),
+                                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                                              ),
+                                              child: const Text('Cancel', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 12)),
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                      const SizedBox(height: 16),
+                                    ] else if (_isCancelled) ...[
+                                      Container(
+                                        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                                        decoration: BoxDecoration(
+                                          color: const Color(0xFFFFF4F2),
+                                          borderRadius: BorderRadius.circular(14),
+                                          border: Border.all(color: const Color(0xFFFFCDD2)),
+                                        ),
+                                        child: const Row(
+                                          children: [
+                                            Icon(Icons.cancel_rounded, color: AppColors.error, size: 22),
+                                            SizedBox(width: 10),
+                                            Expanded(
+                                              child: Text(
+                                                'Order was cancelled. All items were returned to store stock.',
+                                                style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: Color(0xFFC62828)),
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                      const SizedBox(height: 16),
+                                    ],
                                     if (!_isCancelled) ...[_riderCard(), const SizedBox(height: 16)],
                                     _timelineCard(),
                                     const SizedBox(height: 16),

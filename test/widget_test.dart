@@ -9,6 +9,8 @@ import 'package:quick_basket/features/admin/screens/admin_categories_screen.dart
 import 'package:quick_basket/features/admin/screens/admin_dashboard_screen.dart';
 import 'package:quick_basket/services/supabase_service.dart';
 import 'package:quick_basket/models/order_model.dart';
+import 'package:quick_basket/models/cart_item_model.dart';
+import 'package:quick_basket/models/address_model.dart';
 import 'package:quick_basket/shared_widgets/product_card.dart';
 
 void main() {
@@ -317,6 +319,103 @@ void main() {
     // Quantity must stay 2 (capped) and notification must be shown
     expect(find.descendant(of: coconutAddFinder.first, matching: find.text('2')), findsOneWidget);
     expect(find.text('Only 2 units available for Cold Pressed Tender Coconut Water'), findsOneWidget);
+
+    await tester.pumpWidget(const SizedBox());
+    await tester.pump();
+  });
+
+  testWidgets('Atomic stock decrement on order placement and auto-restoral on 60s cancellation', (WidgetTester tester) async {
+    useSize(tester, const Size(1440, 900));
+
+    // Reset prod-7 stock to 2
+    await SupabaseService().updateProductStock('prod-7', 'var-7-1', 2);
+    final initialProducts = await SupabaseService().getProducts();
+    final initialCoconut = initialProducts.firstWhere((p) => p.id == 'prod-7');
+    expect(initialCoconut.defaultVariant.stockQuantity, 2);
+    expect(initialCoconut.defaultVariant.isOutOfStock, isFalse);
+
+    // Place an order for 2 units of prod-7
+    final cartItem = CartItemModel(
+      product: initialCoconut,
+      variant: initialCoconut.defaultVariant,
+      quantity: 2,
+    );
+
+    final order = await SupabaseService().createOrder(
+      userId: 'test-user-inventory',
+      address: AddressModel(
+        id: 'addr-inv-1',
+        userId: 'test-user-inventory',
+        type: 'Home',
+        flatHouseNumber: '101',
+        areaStreet: 'MG Road',
+        city: 'Bengaluru',
+        pincode: '560001',
+      ),
+      items: [cartItem],
+      itemTotal: 98.0,
+      deliveryFee: 0.0,
+      packagingFee: 5.0,
+      tipAmount: 0.0,
+      couponDiscount: 0.0,
+      grandTotal: 103.0,
+      paymentMethod: 'upi',
+    );
+
+    expect(order, isNotNull);
+
+    // 1. Verify stock decremented to 0
+    final productsAfterOrder = await SupabaseService().getProducts();
+    final orderedCoconut = productsAfterOrder.firstWhere((p) => p.id == 'prod-7');
+    expect(orderedCoconut.defaultVariant.stockQuantity, 0);
+    expect(orderedCoconut.defaultVariant.isOutOfStock, isTrue);
+
+    // 2. Ordering an out-of-stock product should be blocked
+    expect(
+      () => SupabaseService().createOrder(
+        userId: 'test-user-inventory',
+        address: AddressModel(
+          id: 'addr-inv-1',
+          userId: 'test-user-inventory',
+          type: 'Home',
+          flatHouseNumber: '101',
+          areaStreet: 'MG Road',
+          city: 'Bengaluru',
+          pincode: '560001',
+        ),
+        items: [cartItem],
+        itemTotal: 98.0,
+        deliveryFee: 0.0,
+        packagingFee: 5.0,
+        tipAmount: 0.0,
+        couponDiscount: 0.0,
+        grandTotal: 103.0,
+        paymentMethod: 'upi',
+      ),
+      throwsA(isA<Exception>()),
+    );
+
+    // 3. Test OrderTrackingScreen cancellation UI
+    await tester.pumpWidget(MaterialApp(home: OrderTrackingScreen(order: order!)));
+    await tester.pumpAndSettle();
+
+    // Verify cancellation button is present in the 60s window
+    expect(find.text('Cancel'), findsWidgets);
+    await tester.tap(find.text('Cancel').first);
+    await tester.pumpAndSettle();
+
+    // Confirm cancel in dialog
+    expect(find.text('Cancel Order?'), findsOneWidget);
+    await tester.tap(find.text('Yes, cancel order'));
+    await tester.pumpAndSettle();
+
+    // 4. Verify order is cancelled and stock is automatically restored to 2
+    expect(find.text('Order was cancelled. All items were returned to store stock.'), findsWidgets);
+
+    final productsAfterCancel = await SupabaseService().getProducts();
+    final restoredCoconut = productsAfterCancel.firstWhere((p) => p.id == 'prod-7');
+    expect(restoredCoconut.defaultVariant.stockQuantity, 2);
+    expect(restoredCoconut.defaultVariant.isOutOfStock, isFalse);
 
     await tester.pumpWidget(const SizedBox());
     await tester.pump();

@@ -103,6 +103,7 @@ class _HomeScreenState extends State<HomeScreen> {
     SupabaseService().ordersNotifier.addListener(_onOrdersNotifierChanged);
     SupabaseService().categoriesNotifier.addListener(_onCategoriesNotifierChanged);
     SupabaseService().hiddenProductIds.addListener(_onProductVisibilityChanged);
+    SupabaseService().inventoryNotifier.addListener(_onInventoryChanged);
 
     // Cross-tab sync timer: periodically polls shared storage for real-time updates
     _ordersSyncTimer = Timer.periodic(const Duration(milliseconds: 1500), (_) {
@@ -149,6 +150,12 @@ class _HomeScreenState extends State<HomeScreen> {
   void _onCategoriesNotifierChanged() {
     if (mounted) {
       _loadCategories(silent: true);
+    }
+  }
+
+  void _onInventoryChanged() {
+    if (mounted) {
+      _loadData();
     }
   }
 
@@ -256,6 +263,7 @@ class _HomeScreenState extends State<HomeScreen> {
     SupabaseService().ordersNotifier.removeListener(_onOrdersNotifierChanged);
     SupabaseService().categoriesNotifier.removeListener(_onCategoriesNotifierChanged);
     SupabaseService().hiddenProductIds.removeListener(_onProductVisibilityChanged);
+    SupabaseService().inventoryNotifier.removeListener(_onInventoryChanged);
     _ordersSyncTimer?.cancel();
     _authSubscription?.cancel();
     _bannerTimer?.cancel();
@@ -482,6 +490,22 @@ class _HomeScreenState extends State<HomeScreen> {
     setState(() => _isPlacingOrder = true);
 
     try {
+      // Validate inventory before placing order: strictly block if item is out of stock or exceeds inventory
+      for (final item in _cart.values) {
+        final latestProduct = _products.firstWhere((p) => p.id == item.product.id, orElse: () => item.product);
+        final latestVariant = latestProduct.variants.firstWhere((v) => v.id == item.variant.id, orElse: () => item.variant);
+        if (latestVariant.stockQuantity <= 0) {
+          setState(() => _isPlacingOrder = false);
+          _showCartSnackBar('${item.product.name} is out of stock. Please remove it from your cart.');
+          return;
+        }
+        if (item.quantity > latestVariant.stockQuantity) {
+          setState(() => _isPlacingOrder = false);
+          _showCartSnackBar('Only ${latestVariant.stockQuantity} units available for ${item.product.name}. Please adjust quantity.');
+          return;
+        }
+      }
+
       final cartItems = _cart.values
           .map((i) => CartItemModel(
                 product: i.product,

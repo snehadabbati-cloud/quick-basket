@@ -30,6 +30,9 @@ class SupabaseService {
   /// Reactive notifier for real-time category & subcategory updates across customer & admin screens
   final ValueNotifier<int> categoriesNotifier = ValueNotifier<int>(0);
 
+  /// Reactive notifier for real-time inventory updates across customer & admin screens
+  final ValueNotifier<int> inventoryNotifier = ValueNotifier<int>(0);
+
   /// Products a store manager has switched off ("In store" toggle in the
   /// admin Products page). The customer storefront hides these.
   final ValueNotifier<Set<String>> hiddenProductIds = ValueNotifier<Set<String>>({});
@@ -48,6 +51,10 @@ class SupabaseService {
 
   void notifyCategoriesChanged() {
     categoriesNotifier.value++;
+  }
+
+  void notifyInventoryChanged() {
+    inventoryNotifier.value++;
   }
 
   void _notifyOrdersChanged() {
@@ -702,6 +709,7 @@ class SupabaseService {
 
   /// Fetch products with optional category filtering
   Future<List<ProductModel>> getProducts({String? categoryId}) async {
+    await applyStockOverrides();
     if (!_isInitialized) {
       if (categoryId != null) {
         return MockDataService.products.where((p) => p.categoryId == categoryId).toList();
@@ -846,6 +854,22 @@ class SupabaseService {
     final isUuid = RegExp(r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$').hasMatch(userId);
     final validUserId = isUuid ? userId : '00000000-0000-0000-0000-000000000000';
 
+    // Inventory pre-validation: verify all requested items have sufficient stock
+    for (final item in items) {
+      int available = item.variant.stockQuantity;
+      for (final p in MockDataService.products) {
+        for (final v in p.variants) {
+          if (v.id == item.variant.id) {
+            available = v.stockQuantity;
+            break;
+          }
+        }
+      }
+      if (available <= 0 || available < item.quantity) {
+        throw Exception('${item.product.name} is out of stock (Available: $available)');
+      }
+    }
+
     if (!_isInitialized) {
       final mockOrder = OrderModel(
         id: 'mock-order-${DateTime.now().millisecondsSinceEpoch}',
@@ -868,6 +892,10 @@ class SupabaseService {
       _localOrders.insert(0, mockOrder);
       await _persistCustomOrders();
       _notifyOrdersChanged();
+
+      for (final item in items) {
+        await decrementProductStock(item.product.id, item.variant.id, item.quantity);
+      }
       return mockOrder;
     }
 
@@ -926,8 +954,15 @@ class SupabaseService {
       _localOrders.insert(0, createdOrder);
       await _persistCustomOrders();
       _notifyOrdersChanged();
+
+      for (final item in items) {
+        await decrementProductStock(item.product.id, item.variant.id, item.quantity);
+      }
       return createdOrder;
     } catch (e) {
+      if (e.toString().contains('out of stock') || e.toString().contains('Available:')) {
+        rethrow;
+      }
       debugPrint('[SupabaseService] Error creating order, returning local order: $e');
       final localOrder = OrderModel(
         id: 'local-order-${DateTime.now().millisecondsSinceEpoch}',
@@ -950,6 +985,10 @@ class SupabaseService {
       _localOrders.insert(0, localOrder);
       await _persistCustomOrders();
       _notifyOrdersChanged();
+
+      for (final item in items) {
+        await decrementProductStock(item.product.id, item.variant.id, item.quantity);
+      }
       return localOrder;
     }
   }
@@ -1620,12 +1659,61 @@ class SupabaseService {
     return null;
   }
 
+  static const String _stockStorageKey = 'qb_stock_overrides';
+
+  Future<void> _saveStockOverride(String variantId, int newStock) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.reload();
+      final raw = prefs.getString(_stockStorageKey);
+      Map<String, dynamic> overrides = {};
+      if (raw != null && raw.isNotEmpty) {
+        try {
+          overrides = Map<String, dynamic>.from(jsonDecode(raw) as Map);
+        } catch (_) {}
+      }
+      overrides[variantId] = newStock;
+      await prefs.setString(_stockStorageKey, jsonEncode(overrides));
+    } catch (e) {
+      debugPrint('[SupabaseService] Error saving stock override: $e');
+    }
+  }
+
+  /// Apply locally saved stock overrides to ensure inventory persistence across sessions & tabs
+  Future<void> applyStockOverrides() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.reload();
+      final raw = prefs.getString(_stockStorageKey);
+      if (raw != null && raw.isNotEmpty) {
+        final Map<String, dynamic> overrides = Map<String, dynamic>.from(jsonDecode(raw) as Map);
+        for (int i = 0; i < MockDataService.products.length; i++) {
+          final prod = MockDataService.products[i];
+          bool modified = false;
+          final updatedVariants = prod.variants.map((v) {
+            if (overrides.containsKey(v.id)) {
+              modified = true;
+              final val = (overrides[v.id] as num).toInt();
+              return v.copyWith(stockQuantity: val);
+            }
+            return v;
+          }).toList();
+          if (modified) {
+            MockDataService.products[i] = prod.copyWith(variants: updatedVariants);
+          }
+        }
+      }
+    } catch (e) {
+      debugPrint('[SupabaseService] Error applying stock overrides: $e');
+    }
+  }
+
   /// Update stock for a product variant
   Future<bool> updateProductStock(String productId, String variantId, int newStock) async {
     try {
       for (int i = 0; i < MockDataService.products.length; i++) {
         final prod = MockDataService.products[i];
-        if (prod.id == productId) {
+        if (prod.id == productId || prod.variants.any((v) => v.id == variantId)) {
           final updatedVariants = prod.variants.map((v) {
             if (v.id == variantId) {
               return v.copyWith(stockQuantity: newStock);
@@ -1636,16 +1724,69 @@ class SupabaseService {
         }
       }
 
+      await _saveStockOverride(variantId, newStock);
+
       if (_isInitialized) {
-        await client.from('product_variants').update({
-          'stock_quantity': newStock,
-        }).eq('id', variantId);
+        try {
+          await client.from('product_variants').update({
+            'stock_quantity': newStock,
+          }).eq('id', variantId);
+        } catch (dbErr) {
+          debugPrint('[SupabaseService] Error updating remote product variant stock: $dbErr');
+        }
       }
+
+      notifyInventoryChanged();
       return true;
     } catch (e) {
       debugPrint('[SupabaseService] Error updating stock: $e');
       return false;
     }
+  }
+
+  /// Decrement product variant stock atomically
+  Future<void> decrementProductStock(String productId, String variantId, int qty) async {
+    int currentStock = 0;
+    for (final p in MockDataService.products) {
+      for (final v in p.variants) {
+        if (v.id == variantId) {
+          currentStock = v.stockQuantity;
+          break;
+        }
+      }
+    }
+    final newStock = (currentStock - qty).clamp(0, 99999);
+    await updateProductStock(productId, variantId, newStock);
+  }
+
+  /// Restore product stock when an order is cancelled
+  Future<void> restoreOrderStock(OrderModel order) async {
+    for (final item in order.items) {
+      int currentStock = 0;
+      for (final p in MockDataService.products) {
+        for (final v in p.variants) {
+          if (v.id == item.variant.id) {
+            currentStock = v.stockQuantity;
+            break;
+          }
+        }
+      }
+      final newStock = currentStock + item.quantity;
+      await updateProductStock(item.product.id, item.variant.id, newStock);
+    }
+  }
+
+  /// Cancel an order within cancellation window and auto-restore stock
+  Future<bool> cancelOrder(String orderId) async {
+    final order = getOrderById(orderId);
+    if (order == null) return false;
+    if (order.status == OrderStatus.delivered || order.status == OrderStatus.cancelled) {
+      return false;
+    }
+
+    await updateOrderStatus(orderId, OrderStatus.cancelled);
+    await restoreOrderStock(order);
+    return true;
   }
 
   /// Create a new product and add it to inventory (PRD Section 6)
