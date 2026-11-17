@@ -243,6 +243,8 @@ class QbQtyStepper extends StatelessWidget {
   final int quantity;
   final VoidCallback? onIncrement;
   final VoidCallback? onDecrement;
+  final int? maxQuantity;
+  final VoidCallback? onMaxReached;
   final double height;
   final double width;
   final double fontSize;
@@ -252,6 +254,8 @@ class QbQtyStepper extends StatelessWidget {
     required this.quantity,
     this.onIncrement,
     this.onDecrement,
+    this.maxQuantity,
+    this.onMaxReached,
     this.height = 34,
     this.width = 76,
     this.fontSize = 13,
@@ -259,6 +263,7 @@ class QbQtyStepper extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final isMax = maxQuantity != null && quantity >= maxQuantity!;
     return Container(
       height: height,
       width: width,
@@ -279,12 +284,18 @@ class QbQtyStepper extends StatelessWidget {
           Text('$quantity', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w800, fontSize: fontSize)),
           Expanded(
             child: InkWell(
-              onTap: onIncrement,
+              onTap: isMax ? (onMaxReached ?? onIncrement) : onIncrement,
               borderRadius: const BorderRadius.horizontal(right: Radius.circular(10)),
               child: Semantics(
                 button: true,
-                label: 'Add one',
-                child: const Center(child: Icon(Icons.add_rounded, size: 16, color: Colors.white)),
+                label: isMax ? 'Maximum stock reached' : 'Add one',
+                child: Center(
+                  child: Icon(
+                    Icons.add_rounded,
+                    size: 16,
+                    color: isMax ? Colors.white38 : Colors.white,
+                  ),
+                ),
               ),
             ),
           ),

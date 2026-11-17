@@ -66,6 +66,7 @@ class _ProductDetailsSheetState extends State<ProductDetailsSheet> {
     final product = widget.product;
     final discount = _selectedVariant.discountPercentage;
     final isOutOfStock = _selectedVariant.isOutOfStock;
+    final isLowStock = !isOutOfStock && _selectedVariant.stockQuantity > 0 && _selectedVariant.stockQuantity <= 3;
     final saving = _selectedVariant.mrp - _selectedVariant.sellingPrice;
     final variants = product.variants.isEmpty ? [product.defaultVariant] : product.variants;
 
@@ -173,6 +174,28 @@ class _ProductDetailsSheetState extends State<ProductDetailsSheet> {
                   ],
                 ),
                 const Text('Inclusive of all taxes', style: TextStyle(fontSize: 12, color: AppColors.textSecondary)),
+                if (isLowStock) ...[
+                  const SizedBox(height: 8),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFFFF3E0),
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(color: const Color(0xFFFFB74D), width: 0.8),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Icon(Icons.flash_on_rounded, size: 16, color: Color(0xFFE65100)),
+                        const SizedBox(width: 6),
+                        Text(
+                          '⚡ Only ${_selectedVariant.stockQuantity} units left in stock — order soon!',
+                          style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: Color(0xFFE65100)),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
                 const SizedBox(height: 18),
                 const Text('Select unit', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w800)),
                 const SizedBox(height: 10),
@@ -216,7 +239,12 @@ class _ProductDetailsSheetState extends State<ProductDetailsSheet> {
                                     if (out)
                                       const Text('Out of stock',
                                           style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: AppColors.textMuted))
-                                    else
+                                    else if (variant.stockQuantity <= 3) ...[
+                                      Text(
+                                        '₹${variant.sellingPrice.toStringAsFixed(0)} · Only ${variant.stockQuantity} left',
+                                        style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: Color(0xFFE65100)),
+                                      ),
+                                    ] else
                                       Text.rich(
                                         TextSpan(children: [
                                           TextSpan(text: '₹${variant.sellingPrice.toStringAsFixed(0)} '),
@@ -312,6 +340,7 @@ class _ProductDetailsSheetState extends State<ProductDetailsSheet> {
                         : _quantity > 0
                             ? QbQtyStepper(
                                 quantity: _quantity,
+                                maxQuantity: _selectedVariant.stockQuantity,
                                 height: 54,
                                 width: double.infinity,
                                 fontSize: 17,
@@ -322,7 +351,10 @@ class _ProductDetailsSheetState extends State<ProductDetailsSheet> {
                                 onIncrement: () {
                                   if (_quantity >= _selectedVariant.stockQuantity) {
                                     ScaffoldMessenger.of(context).showSnackBar(
-                                      const SnackBar(content: Text('Max available stock reached')),
+                                      SnackBar(
+                                        content: Text('Only ${_selectedVariant.stockQuantity} units available for ${widget.product.name}'),
+                                        behavior: SnackBarBehavior.floating,
+                                      ),
                                     );
                                     return;
                                   }
@@ -331,10 +363,21 @@ class _ProductDetailsSheetState extends State<ProductDetailsSheet> {
                                 },
                               )
                             : ElevatedButton.icon(
-                                onPressed: () {
-                                  setState(() => _quantity = 1);
-                                  widget.onAddToCart(widget.product, _selectedVariant);
-                                },
+                                onPressed: isOutOfStock
+                                    ? null
+                                    : () {
+                                        if (_selectedVariant.stockQuantity <= 0) {
+                                          ScaffoldMessenger.of(context).showSnackBar(
+                                            SnackBar(
+                                              content: Text('${widget.product.name} is currently out of stock'),
+                                              behavior: SnackBarBehavior.floating,
+                                            ),
+                                          );
+                                          return;
+                                        }
+                                        setState(() => _quantity = 1);
+                                        widget.onAddToCart(widget.product, _selectedVariant);
+                                      },
                                 icon: const Icon(Icons.shopping_bag_outlined, size: 20),
                                 label: const Text('Add to cart', style: TextStyle(fontSize: 16)),
                                 style: ElevatedButton.styleFrom(

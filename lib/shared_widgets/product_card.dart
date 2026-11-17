@@ -37,6 +37,7 @@ class ProductCard extends StatelessWidget {
     final variant = product.defaultVariant;
     final discount = variant.discountPercentage;
     final isOutOfStock = variant.isOutOfStock;
+    final isLowStock = !isOutOfStock && variant.stockQuantity > 0 && variant.stockQuantity <= 3;
 
     return Container(
       width: width,
@@ -59,17 +60,59 @@ class ProductCard extends StatelessWidget {
                 Positioned.fill(child: QbProductImage(product: product, radius: large ? 14 : 12, iconSize: large ? 56 : 44)),
                 if (discount > 0)
                   Positioned(top: 0, left: 8, child: QbDiscountTab(label: '$discount% OFF', fontSize: large ? 11 : 10)),
+                if (isLowStock)
+                  Positioned(
+                    top: discount > 0 ? (large ? 24 : 22) : 6,
+                    left: 6,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2.5),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFFFF3E0),
+                        borderRadius: BorderRadius.circular(6),
+                        border: Border.all(color: const Color(0xFFFFB74D), width: 0.8),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black.withValues(alpha: 0.08),
+                            blurRadius: 3,
+                            offset: const Offset(0, 1),
+                          ),
+                        ],
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Icon(Icons.flash_on_rounded, size: 10, color: Color(0xFFE65100)),
+                          const SizedBox(width: 2),
+                          Text(
+                            'Only ${variant.stockQuantity} left',
+                            style: const TextStyle(
+                              fontSize: 9,
+                              fontWeight: FontWeight.w800,
+                              color: Color(0xFFE65100),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
                 if (isOutOfStock)
                   Positioned.fill(
                     child: Container(
                       decoration: BoxDecoration(
-                        color: Colors.black.withValues(alpha: 0.45),
+                        color: Colors.black.withValues(alpha: 0.55),
                         borderRadius: BorderRadius.circular(12),
                       ),
                       alignment: Alignment.center,
-                      child: const Text(
-                        'OUT OF STOCK',
-                        style: TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.w800, letterSpacing: 0.5),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                        decoration: BoxDecoration(
+                          color: Colors.black.withValues(alpha: 0.7),
+                          borderRadius: BorderRadius.circular(6),
+                        ),
+                        child: const Text(
+                          'OUT OF STOCK',
+                          style: TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.w800, letterSpacing: 0.5),
+                        ),
                       ),
                     ),
                   ),
@@ -151,6 +194,7 @@ class ProductCard extends StatelessWidget {
                   else
                     QbQtyStepper(
                       quantity: cartQuantity,
+                      maxQuantity: variant.stockQuantity,
                       onIncrement: onIncrement,
                       onDecrement: onDecrement,
                       height: large ? 38 : 34,

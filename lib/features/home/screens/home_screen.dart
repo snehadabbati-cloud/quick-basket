@@ -224,22 +224,31 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   void _reorderItems(OrderModel order) {
+    int addedCount = 0;
     setState(() {
       for (final item in order.items) {
+        if (item.variant.isOutOfStock || item.variant.stockQuantity <= 0) continue;
+        final maxStock = item.variant.stockQuantity;
         if (_cart.containsKey(item.product.id)) {
-          _cart[item.product.id]!.quantity += item.quantity;
+          final current = _cart[item.product.id]!.quantity;
+          _cart[item.product.id]!.quantity = (current + item.quantity).clamp(1, maxStock);
         } else {
           _cart[item.product.id] = CartItemModel(
             product: item.product,
             variant: item.variant,
-            quantity: item.quantity,
+            quantity: item.quantity.clamp(1, maxStock),
           );
         }
+        addedCount++;
       }
       _checkoutOpen = false;
       _currentNavIndex = 2; // Switch directly to Cart tab
     });
-    _showCartSnackBar('${order.items.length} items added to your cart');
+    if (addedCount > 0) {
+      _showCartSnackBar('$addedCount items added to your cart');
+    } else {
+      _showCartSnackBar('Items from this order are currently out of stock');
+    }
   }
 
   @override
@@ -264,8 +273,12 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   void _addToCart(ProductModel product, [ProductVariant? variant]) {
+    final selectedVariant = variant ?? product.defaultVariant;
+    if (selectedVariant.isOutOfStock || selectedVariant.stockQuantity <= 0) {
+      _showCartSnackBar('${product.name} is currently out of stock');
+      return;
+    }
     setState(() {
-      final selectedVariant = variant ?? product.defaultVariant;
       _cart[product.id] = CartItemModel(
         product: product,
         variant: selectedVariant,
@@ -356,7 +369,7 @@ class _HomeScreenState extends State<HomeScreen> {
         if (item.quantity < item.variant.stockQuantity) {
           item.quantity++;
         } else {
-          _showCartSnackBar('Max available stock reached');
+          _showCartSnackBar('Only ${item.variant.stockQuantity} units available for ${item.product.name}');
         }
       }
     });

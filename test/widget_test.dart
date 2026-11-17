@@ -9,6 +9,7 @@ import 'package:quick_basket/features/admin/screens/admin_categories_screen.dart
 import 'package:quick_basket/features/admin/screens/admin_dashboard_screen.dart';
 import 'package:quick_basket/services/supabase_service.dart';
 import 'package:quick_basket/models/order_model.dart';
+import 'package:quick_basket/shared_widgets/product_card.dart';
 
 void main() {
   setUp(() {
@@ -269,6 +270,53 @@ void main() {
     expect(find.text('Categories & Subcategories'), findsOneWidget);
     expect(find.text('Add Category'), findsOneWidget);
     expect(find.text('Add Subcategory'), findsOneWidget);
+
+    await tester.pumpWidget(const SizedBox());
+    await tester.pump();
+  });
+
+  testWidgets('Live stock capping and out-of-stock badges enforce limits correctly', (WidgetTester tester) async {
+    useSize(tester, const Size(1440, 900));
+
+    await tester.pumpWidget(const QuickBasketApp(useGoogleFonts: false));
+    await tester.pump();
+
+    // Verify out-of-stock indicators exist for prod-4 (Fresh Hydroponic Spinach, stock 0)
+    expect(find.text('OUT OF STOCK'), findsWidgets);
+    expect(find.text('Sold out'), findsWidgets);
+
+    // Verify low-stock indicator exists for prod-7 (Cold Pressed Tender Coconut Water, stock 2)
+    expect(find.text('Only 2 left'), findsWidgets);
+
+    // Add low-stock product (prod-7) to cart
+    final coconutAddFinder = find.ancestor(
+      of: find.text('Cold Pressed Tender Coconut Water'),
+      matching: find.byType(ProductCard),
+    );
+    expect(coconutAddFinder, findsWidgets);
+
+    // Tap ADD on Cold Pressed Tender Coconut Water
+    final addBtn = find.descendant(of: coconutAddFinder.first, matching: find.text('ADD'));
+    await tester.ensureVisible(addBtn);
+    await tester.pumpAndSettle();
+    await tester.tap(addBtn);
+    await tester.pumpAndSettle();
+
+    // Now quantity is 1. Tap '+' to reach max stock (2)
+    final plusBtn = find.descendant(of: coconutAddFinder.first, matching: find.byIcon(Icons.add_rounded));
+    await tester.tap(plusBtn);
+    await tester.pumpAndSettle();
+
+    // Quantity should be 2
+    expect(find.descendant(of: coconutAddFinder.first, matching: find.text('2')), findsOneWidget);
+
+    // Tap '+' again when max stock (2) is reached
+    await tester.tap(plusBtn);
+    await tester.pumpAndSettle();
+
+    // Quantity must stay 2 (capped) and notification must be shown
+    expect(find.descendant(of: coconutAddFinder.first, matching: find.text('2')), findsOneWidget);
+    expect(find.text('Only 2 units available for Cold Pressed Tender Coconut Water'), findsOneWidget);
 
     await tester.pumpWidget(const SizedBox());
     await tester.pump();
