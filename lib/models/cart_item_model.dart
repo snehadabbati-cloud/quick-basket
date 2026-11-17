@@ -3,7 +3,7 @@ import 'product_model.dart';
 /// Cart Item Model conforming to PRD Section 4.8
 class CartItemModel {
   final ProductModel product;
-  final ProductVariant variant;
+  ProductVariant variant;
   int quantity;
 
   CartItemModel({
