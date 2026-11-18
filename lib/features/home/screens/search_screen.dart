@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import '../../../core/constants/app_colors.dart';
 import '../../../models/product_model.dart';
 import '../../../models/cart_item_model.dart';
+import '../../../services/supabase_service.dart';
 import '../../../shared_widgets/product_card.dart';
 import '../../../shared_widgets/product_details_sheet.dart';
 import '../../../shared_widgets/responsive_wrapper.dart';
@@ -33,6 +34,7 @@ class SearchScreen extends StatefulWidget {
 class _SearchScreenState extends State<SearchScreen> {
   final TextEditingController _searchController = TextEditingController();
   String _query = '';
+  List<ProductModel> _products = [];
 
   static const List<String> _trendingSearches = [
     'Milk',
@@ -50,7 +52,22 @@ class _SearchScreenState extends State<SearchScreen> {
   ];
 
   @override
+  void initState() {
+    super.initState();
+    _products = List.from(widget.allProducts);
+    SupabaseService().inventoryNotifier.addListener(_onInventoryChanged);
+  }
+
+  void _onInventoryChanged() async {
+    final updated = await SupabaseService().getProducts();
+    if (mounted) {
+      setState(() => _products = updated);
+    }
+  }
+
+  @override
   void dispose() {
+    SupabaseService().inventoryNotifier.removeListener(_onInventoryChanged);
     _searchController.dispose();
     super.dispose();
   }
@@ -59,7 +76,7 @@ class _SearchScreenState extends State<SearchScreen> {
     final q = _query.trim().toLowerCase();
     if (q.isEmpty) return [];
 
-    return widget.allProducts.where((p) {
+    return _products.where((p) {
       final nameLower = p.name.toLowerCase();
       final brandLower = p.brand.toLowerCase();
       final descLower = p.description.toLowerCase();

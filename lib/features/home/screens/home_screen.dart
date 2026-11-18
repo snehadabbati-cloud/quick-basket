@@ -103,10 +103,12 @@ class _HomeScreenState extends State<HomeScreen> {
     SupabaseService().ordersNotifier.addListener(_onOrdersNotifierChanged);
     SupabaseService().categoriesNotifier.addListener(_onCategoriesNotifierChanged);
     SupabaseService().hiddenProductIds.addListener(_onProductVisibilityChanged);
+    SupabaseService().inventoryNotifier.addListener(_onInventoryChanged);
 
     // Cross-tab sync timer: periodically polls shared storage for real-time updates
-    _ordersSyncTimer = Timer.periodic(const Duration(milliseconds: 1500), (_) {
+    _ordersSyncTimer = Timer.periodic(const Duration(milliseconds: 1000), (_) {
       if (mounted) {
+        SupabaseService().checkStockOverridesChanged();
         if (_currentNavIndex == 3) {
           _loadUserOrders(silent: true);
         } else if (_currentNavIndex == 0 || _currentNavIndex == 1) {
@@ -152,6 +154,12 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
+  void _onInventoryChanged() {
+    if (mounted) {
+      _loadData();
+    }
+  }
+
   Future<void> _loadCategories({bool silent = false}) async {
     final categories = await SupabaseService().getCategories();
     if (mounted) {
@@ -183,6 +191,26 @@ class _HomeScreenState extends State<HomeScreen> {
         _categories = categories;
         _banners = banners;
         _products = products;
+
+        // Synchronize in-memory cart with updated product stock
+        _cart.removeWhere((prodId, item) {
+          final p = _products.firstWhere(
+            (prod) => prod.id == prodId || prod.name.toLowerCase() == item.product.name.toLowerCase(),
+            orElse: () => item.product,
+          );
+          final v = p.variants.firstWhere(
+            (varnt) => varnt.id == item.variant.id || varnt.unit.toLowerCase() == item.variant.unit.toLowerCase(),
+            orElse: () => item.variant,
+          );
+          item.variant = v;
+          if (v.isOutOfStock || v.stockQuantity <= 0) {
+            return true;
+          }
+          if (item.quantity > v.stockQuantity) {
+            item.quantity = v.stockQuantity;
+          }
+          return false;
+        });
       });
     }
   }
@@ -224,22 +252,31 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   void _reorderItems(OrderModel order) {
+    int addedCount = 0;
     setState(() {
       for (final item in order.items) {
+        if (item.variant.isOutOfStock || item.variant.stockQuantity <= 0) continue;
+        final maxStock = item.variant.stockQuantity;
         if (_cart.containsKey(item.product.id)) {
-          _cart[item.product.id]!.quantity += item.quantity;
+          final current = _cart[item.product.id]!.quantity;
+          _cart[item.product.id]!.quantity = (current + item.quantity).clamp(1, maxStock);
         } else {
           _cart[item.product.id] = CartItemModel(
             product: item.product,
             variant: item.variant,
-            quantity: item.quantity,
+            quantity: item.quantity.clamp(1, maxStock),
           );
         }
+        addedCount++;
       }
       _checkoutOpen = false;
       _currentNavIndex = 2; // Switch directly to Cart tab
     });
-    _showCartSnackBar('${order.items.length} items added to your cart');
+    if (addedCount > 0) {
+      _showCartSnackBar('$addedCount items added to your cart');
+    } else {
+      _showCartSnackBar('Items from this order are currently out of stock');
+    }
   }
 
   @override
@@ -247,6 +284,7 @@ class _HomeScreenState extends State<HomeScreen> {
     SupabaseService().ordersNotifier.removeListener(_onOrdersNotifierChanged);
     SupabaseService().categoriesNotifier.removeListener(_onCategoriesNotifierChanged);
     SupabaseService().hiddenProductIds.removeListener(_onProductVisibilityChanged);
+    SupabaseService().inventoryNotifier.removeListener(_onInventoryChanged);
     _ordersSyncTimer?.cancel();
     _authSubscription?.cancel();
     _bannerTimer?.cancel();
@@ -264,8 +302,12 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   void _addToCart(ProductModel product, [ProductVariant? variant]) {
+    final selectedVariant = variant ?? product.defaultVariant;
+    if (selectedVariant.isOutOfStock || selectedVariant.stockQuantity <= 0) {
+      _showCartSnackBar('${product.name} is currently out of stock');
+      return;
+    }
     setState(() {
-      final selectedVariant = variant ?? product.defaultVariant;
       _cart[product.id] = CartItemModel(
         product: product,
         variant: selectedVariant,
@@ -327,7 +369,10 @@ class _HomeScreenState extends State<HomeScreen> {
       context,
       MaterialPageRoute(builder: (_) => OrderTrackingScreen(order: order)),
     ).then((_) {
-      if (mounted) _loadUserOrders(silent: true);
+      if (mounted) {
+        _loadUserOrders(silent: true);
+        _loadData();
+      }
     });
   }
 
@@ -356,7 +401,7 @@ class _HomeScreenState extends State<HomeScreen> {
         if (item.quantity < item.variant.stockQuantity) {
           item.quantity++;
         } else {
-          _showCartSnackBar('Max available stock reached');
+          _showCartSnackBar('Only ${item.variant.stockQuantity} units available for ${item.product.name}');
         }
       }
     });
@@ -469,6 +514,35 @@ class _HomeScreenState extends State<HomeScreen> {
     setState(() => _isPlacingOrder = true);
 
     try {
+      // Validate inventory before placing order: strictly block if item is out of stock or exceeds inventory
+      final freshProducts = await SupabaseService().getProducts();
+      for (final item in _cart.values) {
+        final latestProduct = freshProducts.firstWhere(
+          (p) => p.id == item.product.id || p.name.toLowerCase() == item.product.name.toLowerCase(),
+          orElse: () => item.product,
+        );
+        final latestVariant = latestProduct.variants.firstWhere(
+          (v) => v.id == item.variant.id || v.unit.toLowerCase() == item.variant.unit.toLowerCase(),
+          orElse: () => item.variant,
+        );
+        if (latestVariant.isOutOfStock || latestVariant.stockQuantity <= 0) {
+          setState(() {
+            _isPlacingOrder = false;
+            _cart.remove(item.product.id);
+          });
+          _showCartSnackBar('${item.product.name} is out of stock and was removed from your cart.');
+          return;
+        }
+        if (item.quantity > latestVariant.stockQuantity) {
+          setState(() {
+            _isPlacingOrder = false;
+            item.quantity = latestVariant.stockQuantity;
+          });
+          _showCartSnackBar('Only ${latestVariant.stockQuantity} units available for ${item.product.name}. Cart adjusted.');
+          return;
+        }
+      }
+
       final cartItems = _cart.values
           .map((i) => CartItemModel(
                 product: i.product,
@@ -501,6 +575,7 @@ class _HomeScreenState extends State<HomeScreen> {
         _tipAmount = 0.0;
       });
       await _loadUserOrders();
+      await _loadData();
 
       if (order != null && mounted) {
         _openTracking(order);
@@ -1814,6 +1889,31 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Widget _placeOrderButton() {
+    final hasOutOfStock = _cart.values.any((item) {
+      final p = _products.firstWhere(
+        (prod) => prod.id == item.product.id || prod.name.toLowerCase() == item.product.name.toLowerCase(),
+        orElse: () => item.product,
+      );
+      final v = p.variants.firstWhere(
+        (varnt) => varnt.id == item.variant.id || varnt.unit.toLowerCase() == item.variant.unit.toLowerCase(),
+        orElse: () => item.variant,
+      );
+      return v.isOutOfStock || v.stockQuantity <= 0;
+    });
+
+    if (hasOutOfStock) {
+      return ElevatedButton(
+        onPressed: null,
+        style: ElevatedButton.styleFrom(
+          disabledBackgroundColor: const Color(0xFFF1F3F4),
+          minimumSize: const Size.fromHeight(56),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+          textStyle: const TextStyle(fontSize: 15, fontWeight: FontWeight.w800),
+        ),
+        child: const Text('Items Out of Stock · Cannot Checkout', style: TextStyle(color: AppColors.error)),
+      );
+    }
+
     return ElevatedButton(
       onPressed: _isPlacingOrder ? null : () => _executeOrderPlacement(_paymentMethod),
       style: ElevatedButton.styleFrom(

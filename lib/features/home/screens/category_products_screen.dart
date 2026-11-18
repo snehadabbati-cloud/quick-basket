@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import '../../../core/constants/app_colors.dart';
 import '../../../models/category_model.dart';
@@ -54,13 +55,36 @@ class _CategoryProductsScreenState extends State<CategoryProductsScreen> {
   bool _offersOnly = false;
   bool _under50 = false;
   List<String> _dynamicSubcategories = [];
+  List<ProductModel> _products = [];
+  Timer? _pollTimer;
 
   @override
   void initState() {
     super.initState();
     _category = widget.category;
     _dynamicSubcategories = List.from(_category.subcategories);
+    _products = List.from(widget.allProducts);
     _loadSubcategories();
+    SupabaseService().inventoryNotifier.addListener(_onInventoryChanged);
+    _pollTimer = Timer.periodic(const Duration(milliseconds: 1000), (_) {
+      if (mounted) {
+        SupabaseService().checkStockOverridesChanged();
+      }
+    });
+  }
+
+  void _onInventoryChanged() async {
+    final updated = await SupabaseService().getProducts();
+    if (mounted) {
+      setState(() => _products = updated);
+    }
+  }
+
+  @override
+  void dispose() {
+    _pollTimer?.cancel();
+    SupabaseService().inventoryNotifier.removeListener(_onInventoryChanged);
+    super.dispose();
   }
 
   Future<void> _loadSubcategories() async {
@@ -93,7 +117,7 @@ class _CategoryProductsScreenState extends State<CategoryProductsScreen> {
         subLower.split(' ').any((word) => word.length > 3 && (nameLower.contains(word) || descLower.contains(word)));
   }
 
-  List<ProductModel> get _baseProducts => widget.allProducts.where((p) => p.categoryId == _category.id).toList();
+  List<ProductModel> get _baseProducts => _products.where((p) => p.categoryId == _category.id).toList();
 
   int _countFor(String sub) {
     final base = _baseProducts;

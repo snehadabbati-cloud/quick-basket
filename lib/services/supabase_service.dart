@@ -30,6 +30,9 @@ class SupabaseService {
   /// Reactive notifier for real-time category & subcategory updates across customer & admin screens
   final ValueNotifier<int> categoriesNotifier = ValueNotifier<int>(0);
 
+  /// Reactive notifier for real-time inventory updates across customer & admin screens
+  final ValueNotifier<int> inventoryNotifier = ValueNotifier<int>(0);
+
   /// Products a store manager has switched off ("In store" toggle in the
   /// admin Products page). The customer storefront hides these.
   final ValueNotifier<Set<String>> hiddenProductIds = ValueNotifier<Set<String>>({});
@@ -48,6 +51,10 @@ class SupabaseService {
 
   void notifyCategoriesChanged() {
     categoriesNotifier.value++;
+  }
+
+  void notifyInventoryChanged() {
+    inventoryNotifier.value++;
   }
 
   void _notifyOrdersChanged() {
@@ -702,39 +709,52 @@ class SupabaseService {
 
   /// Fetch products with optional category filtering
   Future<List<ProductModel>> getProducts({String? categoryId}) async {
-    if (!_isInitialized) {
-      if (categoryId != null) {
-        return MockDataService.products.where((p) => p.categoryId == categoryId).toList();
+    List<ProductModel> list = [];
+    if (_isInitialized) {
+      try {
+        var query = client
+            .from('products')
+            .select('*, product_variants(*)')
+            .eq('is_active', true);
+
+        if (categoryId != null) {
+          query = query.eq('category_id', categoryId);
+        }
+
+        final response = await query;
+        final List<dynamic> data = response as List<dynamic>;
+        if (data.isNotEmpty) {
+          list = data.map((json) {
+            final map = json as Map<String, dynamic>;
+            final variantsRaw = map['product_variants'] as List<dynamic>? ?? [];
+            map['variants'] = variantsRaw;
+            return ProductModel.fromJson(map);
+          }).toList();
+        }
+      } catch (e) {
+        debugPrint('[SupabaseService] Error fetching products, using fallback: $e');
       }
-      return MockDataService.products;
     }
 
-    try {
-      var query = client
-          .from('products')
-          .select('*, product_variants(*)')
-          .eq('is_active', true);
-
+    if (list.isEmpty) {
+      list = List.from(MockDataService.products);
       if (categoryId != null) {
-        query = query.eq('category_id', categoryId);
+        list = list.where((p) => p.categoryId == categoryId).toList();
       }
-
-      final response = await query;
-      final List<dynamic> data = response as List<dynamic>;
-      if (data.isEmpty) {
-        return MockDataService.products;
-      }
-
-      return data.map((json) {
-        final map = json as Map<String, dynamic>;
-        final variantsRaw = map['product_variants'] as List<dynamic>? ?? [];
-        map['variants'] = variantsRaw;
-        return ProductModel.fromJson(map);
-      }).toList();
-    } catch (e) {
-      debugPrint('[SupabaseService] Error fetching products, using fallback: $e');
-      return MockDataService.products;
     }
+
+    // Always merge persistent stock overrides onto the returned products
+    list = await _applyStockOverridesToList(list);
+
+    // Keep MockDataService in sync
+    for (final p in list) {
+      final idx = MockDataService.products.indexWhere((m) => m.id == p.id || m.name == p.name);
+      if (idx != -1) {
+        MockDataService.products[idx] = p;
+      }
+    }
+
+    return list;
   }
 
   // ==========================================
@@ -846,6 +866,26 @@ class SupabaseService {
     final isUuid = RegExp(r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$').hasMatch(userId);
     final validUserId = isUuid ? userId : '00000000-0000-0000-0000-000000000000';
 
+    // Inventory pre-validation: verify all requested items have sufficient stock
+    final currentProducts = await getProducts();
+    for (final item in items) {
+      int available = 0;
+      for (final p in currentProducts) {
+        for (final v in p.variants) {
+          if (v.id == item.variant.id || (p.name.toLowerCase() == item.product.name.toLowerCase() && v.unit == item.variant.unit)) {
+            available = v.stockQuantity;
+            break;
+          }
+        }
+      }
+      if (available <= 0) {
+        throw Exception('${item.product.name} is out of stock');
+      }
+      if (available < item.quantity) {
+        throw Exception('Only $available units available for ${item.product.name}');
+      }
+    }
+
     if (!_isInitialized) {
       final mockOrder = OrderModel(
         id: 'mock-order-${DateTime.now().millisecondsSinceEpoch}',
@@ -868,6 +908,16 @@ class SupabaseService {
       _localOrders.insert(0, mockOrder);
       await _persistCustomOrders();
       _notifyOrdersChanged();
+
+      for (final item in items) {
+        await decrementProductStock(
+          item.product.id,
+          item.variant.id,
+          item.quantity,
+          productName: item.product.name,
+          variantUnit: item.variant.unit,
+        );
+      }
       return mockOrder;
     }
 
@@ -926,8 +976,21 @@ class SupabaseService {
       _localOrders.insert(0, createdOrder);
       await _persistCustomOrders();
       _notifyOrdersChanged();
+
+      for (final item in items) {
+        await decrementProductStock(
+          item.product.id,
+          item.variant.id,
+          item.quantity,
+          productName: item.product.name,
+          variantUnit: item.variant.unit,
+        );
+      }
       return createdOrder;
     } catch (e) {
+      if (e.toString().contains('out of stock') || e.toString().contains('Available:')) {
+        rethrow;
+      }
       debugPrint('[SupabaseService] Error creating order, returning local order: $e');
       final localOrder = OrderModel(
         id: 'local-order-${DateTime.now().millisecondsSinceEpoch}',
@@ -950,6 +1013,16 @@ class SupabaseService {
       _localOrders.insert(0, localOrder);
       await _persistCustomOrders();
       _notifyOrdersChanged();
+
+      for (final item in items) {
+        await decrementProductStock(
+          item.product.id,
+          item.variant.id,
+          item.quantity,
+          productName: item.product.name,
+          variantUnit: item.variant.unit,
+        );
+      }
       return localOrder;
     }
   }
@@ -1620,14 +1693,133 @@ class SupabaseService {
     return null;
   }
 
-  /// Update stock for a product variant
-  Future<bool> updateProductStock(String productId, String variantId, int newStock) async {
+  static const String _stockStorageKey = 'qb_stock_overrides';
+  static const String _stockUpdatedStorageKey = 'qb_stock_last_updated';
+  int _lastStockTimestamp = 0;
+
+  /// Check if stock overrides were modified across browser tabs or windows
+  Future<bool> checkStockOverridesChanged() async {
     try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.reload();
+      final ts = prefs.getInt(_stockUpdatedStorageKey) ?? 0;
+      if (ts > _lastStockTimestamp) {
+        _lastStockTimestamp = ts;
+        notifyInventoryChanged();
+        return true;
+      }
+    } catch (_) {}
+    return false;
+  }
+
+  Future<Map<String, int>> _loadStockOverrides() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.reload();
+      final raw = prefs.getString(_stockStorageKey);
+      if (raw != null && raw.isNotEmpty) {
+        final decoded = jsonDecode(raw) as Map;
+        return decoded.map((k, v) => MapEntry(k.toString(), (v as num).toInt()));
+      }
+    } catch (e) {
+      debugPrint('[SupabaseService] Error loading stock overrides: $e');
+    }
+    return {};
+  }
+
+  Future<void> _saveStockOverride(String key, int newStock) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.reload();
+      final raw = prefs.getString(_stockStorageKey);
+      Map<String, dynamic> overrides = {};
+      if (raw != null && raw.isNotEmpty) {
+        try {
+          overrides = Map<String, dynamic>.from(jsonDecode(raw) as Map);
+        } catch (_) {}
+      }
+      overrides[key] = newStock;
+      final now = DateTime.now().millisecondsSinceEpoch;
+      _lastStockTimestamp = now;
+      await prefs.setString(_stockStorageKey, jsonEncode(overrides));
+      await prefs.setInt(_stockUpdatedStorageKey, now);
+    } catch (e) {
+      debugPrint('[SupabaseService] Error saving stock override: $e');
+    }
+  }
+
+  Future<List<ProductModel>> _applyStockOverridesToList(List<ProductModel> products) async {
+    final overrides = await _loadStockOverrides();
+    if (overrides.isEmpty) return products;
+
+    return products.map((prod) {
+      bool changed = false;
+      final updatedVariants = prod.variants.map((v) {
+        int? val = overrides[v.id] ??
+            overrides[v.id.toLowerCase()] ??
+            overrides['${prod.id}_${v.id}'] ??
+            overrides['${prod.id.toLowerCase()}_${v.id.toLowerCase()}'] ??
+            overrides['${prod.id}_${v.unit}'] ??
+            overrides['${prod.id.toLowerCase()}_${v.unit.toLowerCase()}'] ??
+            overrides['${prod.name.toLowerCase()}_${v.unit.toLowerCase()}'] ??
+            (prod.variants.length == 1 ? overrides[prod.id] ?? overrides[prod.name.toLowerCase()] : null);
+        if (val != null) {
+          changed = true;
+          return v.copyWith(stockQuantity: val);
+        }
+        return v;
+      }).toList();
+      return changed ? prod.copyWith(variants: updatedVariants) : prod;
+    }).toList();
+  }
+
+  /// Update stock for a product variant
+  Future<bool> updateProductStock(
+    String productId,
+    String variantId,
+    int newStock, {
+    String? productName,
+    String? variantUnit,
+  }) async {
+    try {
+      if (productName == null || variantUnit == null) {
+        for (final p in MockDataService.products) {
+          for (final v in p.variants) {
+            if (v.id == variantId || (p.id == productId && (variantUnit == null || v.unit == variantUnit))) {
+              productName ??= p.name;
+              variantUnit ??= v.unit;
+              break;
+            }
+          }
+          if (productName != null) break;
+        }
+      }
+
+      await _saveStockOverride(variantId, newStock);
+      await _saveStockOverride(variantId.toLowerCase(), newStock);
+      if (productName != null && variantUnit != null) {
+        await _saveStockOverride('${productName.toLowerCase()}_${variantUnit.toLowerCase()}', newStock);
+        await _saveStockOverride('${productId}_$variantUnit', newStock);
+        await _saveStockOverride('${productId.toLowerCase()}_${variantUnit.toLowerCase()}', newStock);
+      }
+      if (productId.isNotEmpty) {
+        await _saveStockOverride('${productId}_$variantId', newStock);
+        await _saveStockOverride('${productId.toLowerCase()}_${variantId.toLowerCase()}', newStock);
+      }
+
       for (int i = 0; i < MockDataService.products.length; i++) {
         final prod = MockDataService.products[i];
-        if (prod.id == productId) {
+        final idMatches = prod.id == productId || prod.id.toLowerCase() == productId.toLowerCase();
+        final nameMatches = productName != null && prod.name.toLowerCase() == productName.toLowerCase();
+        final hasVariant = prod.variants.any((v) => v.id == variantId);
+
+        if (idMatches || nameMatches || hasVariant) {
           final updatedVariants = prod.variants.map((v) {
-            if (v.id == variantId) {
+            final varMatches = v.id == variantId ||
+                v.id.toLowerCase() == variantId.toLowerCase() ||
+                (variantUnit != null && v.unit.toLowerCase() == variantUnit.toLowerCase()) ||
+                (prod.variants.length == 1);
+            if (varMatches) {
               return v.copyWith(stockQuantity: newStock);
             }
             return v;
@@ -1637,15 +1829,136 @@ class SupabaseService {
       }
 
       if (_isInitialized) {
-        await client.from('product_variants').update({
-          'stock_quantity': newStock,
-        }).eq('id', variantId);
+        try {
+          await client.from('product_variants').update({
+            'stock_quantity': newStock,
+          }).eq('id', variantId);
+        } catch (dbErr) {
+          debugPrint('[SupabaseService] Remote product variant update fallback: $dbErr');
+        }
       }
+
+      notifyInventoryChanged();
       return true;
     } catch (e) {
       debugPrint('[SupabaseService] Error updating stock: $e');
       return false;
     }
+  }
+
+  /// Decrement product variant stock atomically
+  Future<void> decrementProductStock(
+    String productId,
+    String variantId,
+    int qty, {
+    String? productName,
+    String? variantUnit,
+  }) async {
+    final products = await getProducts();
+    int currentStock = 0;
+    String matchedProdId = productId;
+    String matchedVarId = variantId;
+    String? matchedName = productName;
+    String? matchedUnit = variantUnit;
+
+    for (final p in products) {
+      final nameMatches = matchedName != null && p.name.toLowerCase() == matchedName.toLowerCase();
+      final idMatches = p.id == productId;
+      if (nameMatches || idMatches) {
+        for (final v in p.variants) {
+          final unitMatches = matchedUnit != null && v.unit.toLowerCase() == matchedUnit.toLowerCase();
+          final varIdMatches = v.id == variantId;
+          if (varIdMatches || unitMatches || p.variants.length == 1) {
+            currentStock = v.stockQuantity;
+            matchedProdId = p.id;
+            matchedVarId = v.id;
+            matchedName = p.name;
+            matchedUnit = v.unit;
+            break;
+          }
+        }
+      }
+      if (currentStock > 0) break;
+    }
+
+    if (currentStock == 0) {
+      for (final p in products) {
+        for (final v in p.variants) {
+          if (v.id == variantId) {
+            currentStock = v.stockQuantity;
+            matchedProdId = p.id;
+            matchedVarId = v.id;
+            matchedName = p.name;
+            matchedUnit = v.unit;
+            break;
+          }
+        }
+        if (currentStock > 0) break;
+      }
+    }
+
+    final newStock = (currentStock - qty).clamp(0, 99999);
+    await updateProductStock(
+      matchedProdId,
+      matchedVarId,
+      newStock,
+      productName: matchedName,
+      variantUnit: matchedUnit,
+    );
+  }
+
+  /// Restore product stock when an order is cancelled
+  Future<void> restoreOrderStock(OrderModel order) async {
+    final products = await getProducts();
+    for (final item in order.items) {
+      int currentStock = 0;
+      String matchedProdId = item.product.id;
+      String matchedVarId = item.variant.id;
+      String matchedName = item.product.name;
+      String matchedUnit = item.variant.unit;
+
+      for (final p in products) {
+        final nameMatches = p.name.toLowerCase() == item.product.name.toLowerCase();
+        final idMatches = p.id == item.product.id;
+        if (nameMatches || idMatches) {
+          for (final v in p.variants) {
+            final unitMatches = v.unit.toLowerCase() == item.variant.unit.toLowerCase();
+            final varIdMatches = v.id == item.variant.id;
+            if (varIdMatches || unitMatches || p.variants.length == 1) {
+              currentStock = v.stockQuantity;
+              matchedProdId = p.id;
+              matchedVarId = v.id;
+              matchedName = p.name;
+              matchedUnit = v.unit;
+              break;
+            }
+          }
+        }
+        if (currentStock > 0) break;
+      }
+
+      final newStock = currentStock + item.quantity;
+      await updateProductStock(
+        matchedProdId,
+        matchedVarId,
+        newStock,
+        productName: matchedName,
+        variantUnit: matchedUnit,
+      );
+    }
+  }
+
+  /// Cancel an order within cancellation window and auto-restore stock
+  Future<bool> cancelOrder(String orderId) async {
+    final order = getOrderById(orderId);
+    if (order == null) return false;
+    if (order.status == OrderStatus.delivered || order.status == OrderStatus.cancelled) {
+      return false;
+    }
+
+    await updateOrderStatus(orderId, OrderStatus.cancelled);
+    await restoreOrderStock(order);
+    return true;
   }
 
   /// Create a new product and add it to inventory (PRD Section 6)

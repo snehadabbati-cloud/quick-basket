@@ -25,6 +25,9 @@ class CartItemTile extends StatelessWidget {
     final variant = item.variant;
     final product = item.product;
     final hasDiscount = variant.mrp > variant.sellingPrice;
+    final isOut = variant.isOutOfStock || variant.stockQuantity <= 0;
+    final isMaxReached = !isOut && item.quantity >= variant.stockQuantity;
+    final isLowStock = !isOut && variant.stockQuantity <= 3;
     final imageSize = compact ? 52.0 : 60.0;
 
     return Container(
@@ -55,6 +58,25 @@ class CartItemTile extends StatelessWidget {
                   compact ? '${variant.unit} · ₹${item.totalPrice.toStringAsFixed(0)}' : variant.unit,
                   style: const TextStyle(fontSize: 12, color: AppColors.textSecondary),
                 ),
+                if (isOut) ...[
+                  const SizedBox(height: 2),
+                  const Text(
+                    'OUT OF STOCK · Remove to checkout',
+                    style: TextStyle(fontSize: 11, fontWeight: FontWeight.w800, color: AppColors.error),
+                  ),
+                ] else if (isMaxReached) ...[
+                  const SizedBox(height: 2),
+                  Text(
+                    'Max ${variant.stockQuantity} in stock',
+                    style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: Color(0xFFE65100)),
+                  ),
+                ] else if (isLowStock) ...[
+                  const SizedBox(height: 2),
+                  Text(
+                    'Only ${variant.stockQuantity} left',
+                    style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: Color(0xFFE65100)),
+                  ),
+                ],
               ],
             ),
           ),
@@ -65,6 +87,7 @@ class CartItemTile extends StatelessWidget {
             children: [
               QbQtyStepper(
                 quantity: item.quantity,
+                maxQuantity: variant.stockQuantity,
                 onIncrement: onIncrement,
                 onDecrement: onDecrement,
                 height: compact ? 34 : 32,

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import '../../../core/constants/app_colors.dart';
 import '../../../models/product_model.dart';
@@ -24,23 +25,52 @@ class _AdminInventoryScreenState extends State<AdminInventoryScreen> {
   String? _selectedCategory;
   String _tab = 'all';
   List<ProductModel> _products = [];
+  Timer? _pollTimer;
 
   @override
   void initState() {
     super.initState();
     _loadProducts();
+    SupabaseService().inventoryNotifier.addListener(_onInventoryChanged);
+    _pollTimer = Timer.periodic(const Duration(milliseconds: 1000), (_) {
+      if (mounted) {
+        SupabaseService().checkStockOverridesChanged();
+      }
+    });
   }
 
-  void _loadProducts() {
-    setState(() {
-      _products = List.from(MockDataService.products);
-    });
+  void _onInventoryChanged() {
+    if (mounted) {
+      _loadProducts();
+    }
+  }
+
+  @override
+  void dispose() {
+    _pollTimer?.cancel();
+    SupabaseService().inventoryNotifier.removeListener(_onInventoryChanged);
+    super.dispose();
+  }
+
+  Future<void> _loadProducts() async {
+    final list = await SupabaseService().getProducts();
+    if (mounted) {
+      setState(() {
+        _products = list;
+      });
+    }
   }
 
   Future<void> _adjustStock(ProductModel product, ProductVariant variant, int delta) async {
     final newStock = (variant.stockQuantity + delta).clamp(0, 9999);
-    await SupabaseService().updateProductStock(product.id, variant.id, newStock);
-    _loadProducts();
+    await SupabaseService().updateProductStock(
+      product.id,
+      variant.id,
+      newStock,
+      productName: product.name,
+      variantUnit: variant.unit,
+    );
+    await _loadProducts();
   }
 
   List<(ProductModel, ProductVariant)> get _rows {
@@ -118,17 +148,25 @@ class _AdminInventoryScreenState extends State<AdminInventoryScreen> {
                     continue;
                   }
                   var matched = false;
-                  for (final p in MockDataService.products) {
+                  for (final p in _products) {
                     for (final v in p.variants) {
-                      if (v.id.toLowerCase() == parts[0].toLowerCase() || (v.sku ?? '').toLowerCase() == parts[0].toLowerCase()) {
-                        await SupabaseService().updateProductStock(p.id, v.id, qty);
+                      if (v.id.toLowerCase() == parts[0].toLowerCase() ||
+                          (v.sku ?? '').toLowerCase() == parts[0].toLowerCase() ||
+                          '${p.name}_${v.unit}'.toLowerCase() == parts[0].toLowerCase()) {
+                        await SupabaseService().updateProductStock(
+                          p.id,
+                          v.id,
+                          qty,
+                          productName: p.name,
+                          variantUnit: v.unit,
+                        );
                         matched = true;
                       }
                     }
                   }
                   matched ? updated++ : skipped++;
                 }
-                _loadProducts();
+                await _loadProducts();
                 setD(() => result = 'Updated $updated rows${skipped > 0 ? ' · skipped $skipped' : ''}');
               },
               child: const Text('Import'),
@@ -202,9 +240,15 @@ class _AdminInventoryScreenState extends State<AdminInventoryScreen> {
             ElevatedButton(
               onPressed: () async {
                 for (final i in items) {
-                  await SupabaseService().updateProductStock(i.$1.id, i.$2.id, i.$2.stockQuantity + i.$3);
+                  await SupabaseService().updateProductStock(
+                    i.$1.id,
+                    i.$2.id,
+                    i.$2.stockQuantity + i.$3,
+                    productName: i.$1.name,
+                    variantUnit: i.$2.unit,
+                  );
                 }
-                _loadProducts();
+                await _loadProducts();
                 if (ctx.mounted) Navigator.pop(ctx);
                 if (mounted) {
                   ScaffoldMessenger.of(context).showSnackBar(
