@@ -1326,11 +1326,18 @@ class SupabaseService {
         prefs.getString('qb_status_${order.orderNumber}') ??
         prefs.getString('qb_status_$cleanNum') ??
         prefs.getString('qb_status_#$cleanNum');
+    final reason = prefs.getString('qb_cancel_reason_${order.id}') ??
+        prefs.getString('qb_cancel_reason_${order.orderNumber}') ??
+        prefs.getString('qb_cancel_reason_$cleanNum') ??
+        prefs.getString('qb_cancel_reason_#$cleanNum') ??
+        order.cancellationReason;
     if (saved != null) {
       final latest = OrderStatusExtension.fromString(saved);
-      if (order.status != latest) {
-        return order.copyWith(status: latest);
+      if (order.status != latest || order.cancellationReason != reason) {
+        return order.copyWith(status: latest, cancellationReason: reason);
       }
+    } else if (order.cancellationReason != reason) {
+      return order.copyWith(cancellationReason: reason);
     }
     return order;
   }
@@ -1808,7 +1815,7 @@ class SupabaseService {
   }
 
   /// Update order status from Store Manager Dashboard (PRD Section 6.2)
-  Future<bool> updateOrderStatus(String orderId, OrderStatus newStatus) async {
+  Future<bool> updateOrderStatus(String orderId, OrderStatus newStatus, {String? cancellationReason}) async {
     final cleanId = orderId.replaceAll('#', '').trim();
     final index = _localOrders.indexWhere((o) {
       final cleanNum = o.orderNumber.replaceAll('#', '').trim();
@@ -1825,14 +1832,40 @@ class SupabaseService {
       await prefs.setString('qb_status_$orderId', newStatus.value);
       await prefs.setString('qb_status_$cleanId', newStatus.value);
       await prefs.setString('qb_status_#$cleanId', newStatus.value);
-      if (index != -1) {
-        final o = _localOrders[index];
+      if (cancellationReason != null) {
+        await prefs.setString('qb_cancel_reason_$orderId', cancellationReason);
+        await prefs.setString('qb_cancel_reason_$cleanId', cancellationReason);
+        await prefs.setString('qb_cancel_reason_#$cleanId', cancellationReason);
+      }
+      if (index == -1) {
+        _loadCustomOrdersFromPrefs(prefs);
+      }
+      final targetIdx = index != -1
+          ? index
+          : _localOrders.indexWhere((o) {
+              final cleanNum = o.orderNumber.replaceAll('#', '').trim();
+              return o.id == orderId ||
+                  o.id == cleanId ||
+                  o.orderNumber == orderId ||
+                  cleanNum == cleanId;
+            });
+      if (targetIdx != -1) {
+        final o = _localOrders[targetIdx];
         final cleanNum = o.orderNumber.replaceAll('#', '').trim();
         await prefs.setString('qb_status_${o.id}', newStatus.value);
         await prefs.setString('qb_status_${o.orderNumber}', newStatus.value);
         await prefs.setString('qb_status_$cleanNum', newStatus.value);
         await prefs.setString('qb_status_#$cleanNum', newStatus.value);
-        _localOrders[index] = o.copyWith(status: newStatus);
+        if (cancellationReason != null) {
+          await prefs.setString('qb_cancel_reason_${o.id}', cancellationReason);
+          await prefs.setString('qb_cancel_reason_${o.orderNumber}', cancellationReason);
+          await prefs.setString('qb_cancel_reason_$cleanNum', cancellationReason);
+          await prefs.setString('qb_cancel_reason_#$cleanNum', cancellationReason);
+        }
+        _localOrders[targetIdx] = o.copyWith(
+          status: newStatus,
+          cancellationReason: cancellationReason ?? o.cancellationReason,
+        );
         await _persistCustomOrders();
       }
     } catch (e) {
@@ -1840,9 +1873,7 @@ class SupabaseService {
     }
 
     // 2. Update local memory and notify listeners
-    if (index != -1) {
-      _notifyOrdersChanged();
-    }
+    _notifyOrdersChanged();
 
     if (!_isInitialized) return true;
 
@@ -1874,6 +1905,9 @@ class SupabaseService {
       final savedVal = prefs.getString('qb_status_$orderIdOrNumber') ??
           prefs.getString('qb_status_$cleanId') ??
           prefs.getString('qb_status_#$cleanId');
+      final savedReason = prefs.getString('qb_cancel_reason_$orderIdOrNumber') ??
+          prefs.getString('qb_cancel_reason_$cleanId') ??
+          prefs.getString('qb_cancel_reason_#$cleanId');
       if (savedVal != null) {
         final parsed = OrderStatusExtension.fromString(savedVal);
         final localIdx = _localOrders.indexWhere((o) {
@@ -1883,9 +1917,15 @@ class SupabaseService {
               o.orderNumber == orderIdOrNumber ||
               cleanNum == cleanId;
         });
-        if (localIdx != -1 && _localOrders[localIdx].status != parsed) {
-          _localOrders[localIdx] = _localOrders[localIdx].copyWith(status: parsed);
-          _notifyOrdersChanged();
+        if (localIdx != -1) {
+          final current = _localOrders[localIdx];
+          if (current.status != parsed || (savedReason != null && current.cancellationReason != savedReason)) {
+            _localOrders[localIdx] = current.copyWith(
+              status: parsed,
+              cancellationReason: savedReason ?? current.cancellationReason,
+            );
+            _notifyOrdersChanged();
+          }
         }
         return parsed;
       }
@@ -2176,14 +2216,14 @@ class SupabaseService {
   }
 
   /// Cancel an order within cancellation window and auto-restore stock
-  Future<bool> cancelOrder(String orderId) async {
+  Future<bool> cancelOrder(String orderId, {String reason = 'Cancelled by customer'}) async {
     final order = getOrderById(orderId);
     if (order == null) return false;
     if (order.status == OrderStatus.delivered || order.status == OrderStatus.cancelled) {
       return false;
     }
 
-    await updateOrderStatus(orderId, OrderStatus.cancelled);
+    await updateOrderStatus(orderId, OrderStatus.cancelled, cancellationReason: reason);
     await restoreOrderStock(order);
     return true;
   }

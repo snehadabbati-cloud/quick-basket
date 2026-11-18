@@ -116,7 +116,7 @@ class _AdminReportsPageState extends State<AdminReportsPage> {
       children: [
         AdminPageHeader(
           title: 'Reports',
-          subtitle: '${_fmt(start)} – ${_fmt(end.subtract(const Duration(days: 1)))} ${end.year} · Koramangala Dark Store',
+          subtitle: '${_fmt(start)} – ${_fmt(end.subtract(const Duration(days: 1)))} ${end.year} · Nizampet Dark Store (500090)',
           actions: [
             AdminSegmented<String>(
               options: const [('7d', '7 days'), ('14d', '14 days'), ('30d', '30 days'), ('custom', 'Custom')],

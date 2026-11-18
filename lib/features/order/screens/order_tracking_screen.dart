@@ -62,12 +62,20 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen> {
       }
       final latest = await SupabaseService().getLatestOrderStatus(widget.order.orderNumber) ??
           await SupabaseService().getLatestOrderStatus(widget.order.id);
-      if (latest != null && latest != _currentStatus && mounted) {
-        setState(() {
-          _currentStatus = latest;
-          _activeOrder = _activeOrder.copyWith(status: latest);
-          _applyStatusTiming();
-        });
+      final currentOrder = SupabaseService().getOrderById(widget.order.id) ??
+          SupabaseService().getOrderById(widget.order.orderNumber);
+      if (mounted) {
+        if (latest != null && latest != _currentStatus) {
+          setState(() {
+            _currentStatus = latest;
+            _activeOrder = currentOrder ?? _activeOrder.copyWith(status: latest);
+            _applyStatusTiming();
+          });
+        } else if (currentOrder != null && currentOrder.cancellationReason != _activeOrder.cancellationReason) {
+          setState(() {
+            _activeOrder = currentOrder;
+          });
+        }
       }
     });
 
@@ -105,6 +113,20 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen> {
           _currentStatus = updated.status;
           _applyStatusTiming();
         }
+      });
+    }
+  }
+
+  @override
+  void didUpdateWidget(OrderTrackingScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.order.id != widget.order.id ||
+        oldWidget.order.status != widget.order.status ||
+        oldWidget.order.cancellationReason != widget.order.cancellationReason) {
+      setState(() {
+        _activeOrder = widget.order;
+        _currentStatus = widget.order.status;
+        _applyStatusTiming();
       });
     }
   }
@@ -158,11 +180,14 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen> {
     );
 
     if (confirmed == true && mounted) {
-      final success = await SupabaseService().cancelOrder(_activeOrder.id);
+      final success = await SupabaseService().cancelOrder(_activeOrder.id, reason: 'Cancelled by customer');
       if (success && mounted) {
         setState(() {
           _currentStatus = OrderStatus.cancelled;
-          _activeOrder = _activeOrder.copyWith(status: OrderStatus.cancelled);
+          _activeOrder = _activeOrder.copyWith(
+            status: OrderStatus.cancelled,
+            cancellationReason: 'Cancelled by customer',
+          );
           _remainingSeconds = 0;
         });
         ScaffoldMessenger.of(context).showSnackBar(
@@ -319,7 +344,11 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen> {
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             Text(
-                              _currentStatus.displayName,
+                              _isCancelled
+                                  ? (_activeOrder.cancellationReason == 'Cancelled by store'
+                                      ? 'Cancelled by Store'
+                                      : 'Cancelled by You')
+                                  : _currentStatus.displayName,
                               style: TextStyle(color: Colors.white.withValues(alpha: 0.9), fontSize: 13, fontWeight: FontWeight.w600),
                             ),
                             const SizedBox(height: 4),
@@ -391,14 +420,16 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen> {
                               borderRadius: BorderRadius.circular(14),
                               border: Border.all(color: const Color(0xFFFFCDD2)),
                             ),
-                            child: const Row(
+                            child: Row(
                               children: [
-                                Icon(Icons.cancel_rounded, color: AppColors.error, size: 22),
-                                SizedBox(width: 10),
+                                const Icon(Icons.cancel_rounded, color: AppColors.error, size: 22),
+                                const SizedBox(width: 10),
                                 Expanded(
                                   child: Text(
-                                    'Order was cancelled. All items were returned to store stock.',
-                                    style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: Color(0xFFC62828)),
+                                    _activeOrder.cancellationReason == 'Cancelled by store'
+                                        ? 'Order was cancelled by store. All items returned to store stock.'
+                                        : 'You cancelled this order. Full refund of ₹${_activeOrder.grandTotal.toStringAsFixed(0)} initiated. All items returned to stock.',
+                                    style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: Color(0xFFC62828)),
                                   ),
                                 ),
                               ],
@@ -535,14 +566,24 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen> {
         children: [
           const Text('Order status', style: TextStyle(fontSize: 15, fontWeight: FontWeight.w800)),
           const SizedBox(height: 12),
-          if (_isCancelled)
-            const QbPill(
-              label: 'This order was cancelled by the store',
+          if (_isCancelled) ...[
+            QbPill(
+              label: _activeOrder.cancellationReason == 'Cancelled by store'
+                  ? 'This order was cancelled by the store'
+                  : 'This order was cancelled by you',
               icon: Icons.cancel_outlined,
               background: AppColors.errorLight,
               foreground: AppColors.error,
               fontSize: 12,
-            )
+            ),
+            const SizedBox(height: 10),
+            Text(
+              _activeOrder.cancellationReason == 'Cancelled by store'
+                  ? 'The store had to cancel this order. A full refund of ₹${_activeOrder.grandTotal.toStringAsFixed(0)} has been processed to your payment method.'
+                  : 'You cancelled this order within the cancellation window. A full refund of ₹${_activeOrder.grandTotal.toStringAsFixed(0)} has been processed to your payment method.',
+              style: const TextStyle(fontSize: 12, color: AppColors.textSecondary, height: 1.45),
+            ),
+          ]
           else
             for (var i = 0; i < steps.length; i++)
               IntrinsicHeight(
@@ -738,7 +779,7 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen> {
                                     crossAxisAlignment: CrossAxisAlignment.start,
                                     children: [
                                       Text(
-                                        'Order $_orderNumber · ${_currentStatus.displayName}',
+                                        'Order $_orderNumber · ${_isCancelled ? (_activeOrder.cancellationReason == 'Cancelled by store' ? 'Cancelled by Store' : 'Cancelled by You') : _currentStatus.displayName}',
                                         style: TextStyle(color: Colors.white.withValues(alpha: 0.9), fontSize: 14, fontWeight: FontWeight.w600),
                                       ),
                                       const SizedBox(height: 6),
@@ -840,14 +881,16 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen> {
                                           borderRadius: BorderRadius.circular(14),
                                           border: Border.all(color: const Color(0xFFFFCDD2)),
                                         ),
-                                        child: const Row(
+                                        child: Row(
                                           children: [
-                                            Icon(Icons.cancel_rounded, color: AppColors.error, size: 22),
-                                            SizedBox(width: 10),
+                                            const Icon(Icons.cancel_rounded, color: AppColors.error, size: 22),
+                                            const SizedBox(width: 10),
                                             Expanded(
                                               child: Text(
-                                                'Order was cancelled. All items were returned to store stock.',
-                                                style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: Color(0xFFC62828)),
+                                                _activeOrder.cancellationReason == 'Cancelled by store'
+                                                    ? 'Order was cancelled by store. All items returned to store stock.'
+                                                    : 'You cancelled this order. Full refund of ₹${_activeOrder.grandTotal.toStringAsFixed(0)} initiated. All items returned to stock.',
+                                                style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: Color(0xFFC62828)),
                                               ),
                                             ),
                                           ],

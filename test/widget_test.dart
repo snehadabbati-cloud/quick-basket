@@ -5,6 +5,7 @@ import 'package:quick_basket/main.dart';
 import 'package:quick_basket/core/constants/app_strings.dart';
 import 'package:quick_basket/features/home/screens/home_screen.dart';
 import 'package:quick_basket/features/order/screens/order_tracking_screen.dart';
+import 'package:quick_basket/features/admin/pages/admin_overview_page.dart';
 import 'package:quick_basket/features/admin/screens/admin_categories_screen.dart';
 import 'package:quick_basket/features/admin/screens/admin_dashboard_screen.dart';
 import 'package:quick_basket/services/supabase_service.dart';
@@ -411,7 +412,8 @@ void main() {
     await tester.pumpAndSettle();
 
     // 4. Verify order is cancelled and stock is automatically restored to 2
-    expect(find.text('Order was cancelled. All items were returned to store stock.'), findsWidgets);
+    expect(find.textContaining('You cancelled this order'), findsWidgets);
+    expect(find.text('This order was cancelled by you'), findsOneWidget);
 
     final productsAfterCancel = await SupabaseService().getProducts();
     final restoredCoconut = productsAfterCancel.firstWhere((p) => p.id == 'prod-7');
@@ -558,6 +560,89 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.textContaining('Place Order'), findsOneWidget);
+
+    await tester.pumpWidget(const SizedBox());
+    await tester.pump();
+  });
+
+  testWidgets('Order Cancellation: Customer cancellation vs Store cancellation & Admin table visibility', (WidgetTester tester) async {
+    useSize(tester, const Size(1280, 800));
+
+    final customerCancelledOrder = OrderModel(
+      id: 'test-cancel-customer',
+      orderNumber: '#QB-771122',
+      userId: 'test-user-1',
+      items: [],
+      itemTotal: 150.0,
+      deliveryFee: 0.0,
+      packagingFee: 5.0,
+      grandTotal: 155.0,
+      status: OrderStatus.cancelled,
+      cancellationReason: 'Cancelled by customer',
+      paymentMethod: 'upi',
+      createdAt: DateTime.now(),
+    );
+
+    final storeCancelledOrder = OrderModel(
+      id: 'test-cancel-store',
+      orderNumber: '#QB-883344',
+      userId: 'test-user-2',
+      items: [],
+      itemTotal: 220.0,
+      deliveryFee: 0.0,
+      packagingFee: 5.0,
+      grandTotal: 225.0,
+      status: OrderStatus.cancelled,
+      cancellationReason: 'Cancelled by store',
+      paymentMethod: 'upi',
+      createdAt: DateTime.now(),
+    );
+
+    // 1. Customer cancellation screen check
+    await tester.pumpWidget(MaterialApp(home: OrderTrackingScreen(order: customerCancelledOrder)));
+    await tester.pumpAndSettle();
+
+    expect(find.text('This order was cancelled by you'), findsOneWidget);
+    expect(find.textContaining('You cancelled this order'), findsWidgets);
+    expect(find.textContaining('This order was cancelled by the store'), findsNothing);
+
+    // 2. Store cancellation screen check
+    await tester.pumpWidget(MaterialApp(home: OrderTrackingScreen(order: storeCancelledOrder)));
+    await tester.pumpAndSettle();
+
+    expect(find.text('This order was cancelled by the store'), findsOneWidget);
+    expect(find.textContaining('Order was cancelled by store'), findsWidgets);
+
+    // 3. Admin Overview Page: cancelled orders are visible and restocked badge is rendered
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: AdminOverviewPage(
+            orders: [customerCancelledOrder, storeCancelledOrder],
+            customerName: (o) => 'Sneha',
+            onAdvance: (_) async {},
+            onOpenSection: (_) {},
+            onRestock: (_, __) async {},
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    // Verify orders are present in overview table
+    expect(find.text('#QB-771122'), findsOneWidget);
+    expect(find.text('#QB-883344'), findsOneWidget);
+    expect(find.text('Cancelled (Customer)'), findsOneWidget);
+    expect(find.text('Cancelled (Store)'), findsOneWidget);
+    expect(find.text('Restocked'), findsWidgets);
+
+    // Tap 'Cancelled' filter segment
+    expect(find.text('Cancelled'), findsOneWidget);
+    await tester.tap(find.text('Cancelled'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('#QB-771122'), findsOneWidget);
+    expect(find.text('#QB-883344'), findsOneWidget);
 
     await tester.pumpWidget(const SizedBox());
     await tester.pump();

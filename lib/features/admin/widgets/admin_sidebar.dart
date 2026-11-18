@@ -157,7 +157,7 @@ class AdminSidebar extends StatelessWidget {
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          const Text('Koramangala Store', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700)),
+                          const Text('Nizampet Dark Store (500090)', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700)),
                           Text(
                             storeOpen ? 'Open · 7 AM – 11 PM' : 'Closed · not accepting orders',
                             style: const TextStyle(fontSize: 11, color: AppColors.textSecondary),

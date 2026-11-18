@@ -32,6 +32,7 @@ class AdminOverviewPage extends StatefulWidget {
 
 class _AdminOverviewPageState extends State<AdminOverviewPage> {
   String _range = 'today';
+  String _ordersFilter = 'all';
 
   static const _months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
   static const _weekdays = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
@@ -72,7 +73,7 @@ class _AdminOverviewPageState extends State<AdminOverviewPage> {
       children: [
         AdminPageHeader(
           title: '$greeting, team',
-          subtitle: '${_weekdays[now.weekday - 1]}, ${now.day} ${_months[now.month - 1]} ${now.year} · Koramangala Dark Store',
+          subtitle: '${_weekdays[now.weekday - 1]}, ${now.day} ${_months[now.month - 1]} ${now.year} · Nizampet Dark Store (500090)',
           actions: [
             AdminSegmented<String>(
               options: const [('today', 'Today'), ('7d', '7 days'), ('30d', '30 days')],
@@ -314,10 +315,26 @@ class _AdminOverviewPageState extends State<AdminOverviewPage> {
   }
 
   Widget _liveOrdersPanel() {
-    final live = widget.orders.where((o) => OrderFlow.isActive(o.status)).toList()
-      ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
-    final rows = live.take(6).toList();
-    final newCount = widget.orders.where((o) => o.status == OrderStatus.placed).length;
+    final allOrders = List<OrderModel>.from(widget.orders)..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+    final live = allOrders.where((o) => OrderFlow.isActive(o.status)).toList();
+    final cancelled = allOrders.where((o) => o.status == OrderStatus.cancelled).toList();
+
+    List<OrderModel> displayed;
+    switch (_ordersFilter) {
+      case 'live':
+        displayed = live;
+        break;
+      case 'cancelled':
+        displayed = cancelled;
+        break;
+      case 'all':
+      default:
+        displayed = allOrders;
+        break;
+    }
+    final rows = displayed.take(10).toList();
+    final newCount = live.where((o) => o.status == OrderStatus.placed).length;
+    final cancelledCount = cancelled.length;
 
     return AdminPanel(
       padding: EdgeInsets.zero,
@@ -327,26 +344,70 @@ class _AdminOverviewPageState extends State<AdminOverviewPage> {
         children: [
           Padding(
             padding: const EdgeInsets.fromLTRB(20, 14, 12, 10),
-            child: Row(
+            child: Wrap(
+              alignment: WrapAlignment.spaceBetween,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              spacing: 12,
+              runSpacing: 8,
               children: [
-                const Text('Live orders', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800)),
-                const SizedBox(width: 8),
-                if (newCount > 0) QbPill(label: '$newCount new', background: AppColors.primary, foreground: Colors.white),
-                const Spacer(),
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Text('Live orders', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800)),
+                    const SizedBox(width: 8),
+                    if (newCount > 0) QbPill(label: '$newCount new', background: AppColors.primary, foreground: Colors.white),
+                    if (cancelledCount > 0) ...[
+                      const SizedBox(width: 6),
+                      QbPill(
+                        label: '$cancelledCount cancelled',
+                        background: AppColors.errorLight,
+                        foreground: AppColors.error,
+                      ),
+                    ],
+                  ],
+                ),
+                AdminSegmented<String>(
+                  options: const [
+                    ('all', 'All'),
+                    ('live', 'Live'),
+                    ('cancelled', 'Cancelled'),
+                  ],
+                  value: _ordersFilter,
+                  onChanged: (v) => setState(() => _ordersFilter = v),
+                ),
                 TextButton(onPressed: () => widget.onOpenSection(AdminSection.orders), child: const Text('Open order board')),
               ],
             ),
           ),
           AdminTable(
             columns: const ['Order', 'Customer', 'Items', 'Amount', 'Status', 'Placed', ''],
-            flex: const [1.1, 1.3, 0.6, 0.8, 1.3, 0.8, 1.1],
+            flex: const [1.1, 1.3, 0.6, 0.8, 1.4, 0.8, 1.1],
             minWidth: 720,
-            empty: const Padding(
-              padding: EdgeInsets.all(24),
-              child: Text('No live orders right now', style: TextStyle(color: AppColors.textSecondary)),
+            empty: Padding(
+              padding: const EdgeInsets.all(24),
+              child: Text(
+                _ordersFilter == 'cancelled'
+                    ? 'No cancelled orders'
+                    : (_ordersFilter == 'live' ? 'No live orders right now' : 'No orders yet'),
+                style: const TextStyle(color: AppColors.textSecondary),
+              ),
             ),
             rows: rows.map((o) {
+              final isCancelled = o.status == OrderStatus.cancelled;
+              final isDelivered = o.status == OrderStatus.delivered;
               final st = OrderStatusStyle.of(o.status);
+
+              String statusLabel = st.label;
+              Color bg = st.background;
+              Color fg = st.foreground;
+              if (isCancelled) {
+                statusLabel = o.cancellationReason == 'Cancelled by store'
+                    ? 'Cancelled (Store)'
+                    : 'Cancelled (Customer)';
+                bg = AppColors.errorLight;
+                fg = AppColors.error;
+              }
+
               return <Widget>[
                 Text(o.orderNumber, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700)),
                 Text(widget.customerName(o), overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 13)),
@@ -354,24 +415,48 @@ class _AdminOverviewPageState extends State<AdminOverviewPage> {
                 Text(qbRupees(o.grandTotal), style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700)),
                 Align(
                   alignment: Alignment.centerLeft,
-                  child: QbPill(label: st.label, background: st.background, foreground: st.foreground, dot: true, fontSize: 12),
+                  child: QbPill(label: statusLabel, background: bg, foreground: fg, dot: true, fontSize: 12),
                 ),
                 Text(qbAge(o.createdAt) == 'now' ? 'just now' : '${qbAge(o.createdAt)} ago',
                     style: const TextStyle(fontSize: 13, color: AppColors.textSecondary)),
                 Align(
                   alignment: Alignment.centerRight,
-                  child: OutlinedButton(
-                    onPressed: () => widget.onAdvance(o),
-                    style: OutlinedButton.styleFrom(
-                      backgroundColor: AppColors.primaryTint,
-                      foregroundColor: AppColors.primary,
-                      side: const BorderSide(color: Color(0xFFCFE3D6)),
-                      minimumSize: const Size(0, 34),
-                      padding: const EdgeInsets.symmetric(horizontal: 12),
-                      textStyle: const TextStyle(fontSize: 12, fontWeight: FontWeight.w800),
-                    ),
-                    child: Text(OrderFlow.shortAction(o.status)),
-                  ),
+                  child: isCancelled
+                      ? Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                          decoration: BoxDecoration(
+                            color: AppColors.errorLight,
+                            borderRadius: BorderRadius.circular(6),
+                          ),
+                          child: const Text(
+                            'Restocked',
+                            style: TextStyle(fontSize: 11, fontWeight: FontWeight.w800, color: AppColors.error),
+                          ),
+                        )
+                      : isDelivered
+                          ? Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                              decoration: BoxDecoration(
+                                color: AppColors.primaryLight,
+                                borderRadius: BorderRadius.circular(6),
+                              ),
+                              child: const Text(
+                                'Completed',
+                                style: TextStyle(fontSize: 11, fontWeight: FontWeight.w800, color: AppColors.primaryDeep),
+                              ),
+                            )
+                          : OutlinedButton(
+                              onPressed: () => widget.onAdvance(o),
+                              style: OutlinedButton.styleFrom(
+                                backgroundColor: AppColors.primaryTint,
+                                foregroundColor: AppColors.primary,
+                                side: const BorderSide(color: Color(0xFFCFE3D6)),
+                                minimumSize: const Size(0, 34),
+                                padding: const EdgeInsets.symmetric(horizontal: 12),
+                                textStyle: const TextStyle(fontSize: 12, fontWeight: FontWeight.w800),
+                              ),
+                              child: Text(OrderFlow.shortAction(o.status)),
+                            ),
                 ),
               ];
             }).toList(),

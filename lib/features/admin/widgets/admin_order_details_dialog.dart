@@ -672,6 +672,33 @@ class _AdminOrderDetailsDialogState extends State<AdminOrderDetailsDialog> {
                 ),
               ),
             ),
+          ] else if (status == OrderStatus.cancelled) ...[
+            Expanded(
+              child: Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFFFEBEE),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: const Color(0xFFFFCDD2)),
+                ),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    const Icon(Icons.cancel_rounded, color: AppColors.error, size: 18),
+                    const SizedBox(width: 8),
+                    Flexible(
+                      child: Text(
+                        _order.cancellationReason == 'Cancelled by store'
+                            ? 'Cancelled by Store • Items Restocked'
+                            : 'Cancelled by Customer • Refund Processed & Items Restocked',
+                        style: const TextStyle(fontWeight: FontWeight.w800, color: AppColors.error, fontSize: 13),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
           ] else ...[
             Expanded(
               child: Container(
@@ -729,7 +756,22 @@ class _AdminOrderDetailsDialogState extends State<AdminOrderDetailsDialog> {
         bg = const Color(0xFFFFEBEE);
         fg = AppColors.error;
         icon = Icons.cancel_rounded;
-        break;
+        final label = _order.cancellationReason == 'Cancelled by store' ? 'Cancelled (Store)' : 'Cancelled (Customer)';
+        return Container(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+          decoration: BoxDecoration(color: bg, borderRadius: BorderRadius.circular(6)),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(icon, size: 12, color: fg),
+              const SizedBox(width: 4),
+              Text(
+                label,
+                style: TextStyle(fontSize: 10, fontWeight: FontWeight.w800, color: fg),
+              ),
+            ],
+          ),
+        );
     }
 
     return Container(

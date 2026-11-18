@@ -83,6 +83,7 @@ class OrderModel {
   final OrderStatus status;
   final String deliveryOtp;
   final String? deliveryInstructions;
+  final String? cancellationReason;
   final DateTime createdAt;
   final int estimatedDeliveryMinutes;
 
@@ -104,6 +105,7 @@ class OrderModel {
     this.status = OrderStatus.placed,
     this.deliveryOtp = '4921',
     this.deliveryInstructions,
+    this.cancellationReason,
     DateTime? createdAt,
     this.estimatedDeliveryMinutes = 12,
   }) : createdAt = createdAt ?? DateTime.now();
@@ -126,6 +128,7 @@ class OrderModel {
       status: OrderStatusExtension.fromString(json['order_status'] as String? ?? 'placed'),
       deliveryOtp: json['delivery_otp'] as String? ?? '4921',
       deliveryInstructions: json['delivery_instructions'] as String?,
+      cancellationReason: json['cancellation_reason'] as String?,
       createdAt: json['created_at'] != null
           ? DateTime.tryParse(json['created_at'] as String) ?? DateTime.now()
           : DateTime.now(),
@@ -148,6 +151,7 @@ class OrderModel {
       'order_status': status.value,
       'delivery_otp': deliveryOtp,
       'delivery_instructions': deliveryInstructions,
+      'cancellation_reason': cancellationReason,
       'created_at': createdAt.toIso8601String(),
       'estimated_delivery_minutes': estimatedDeliveryMinutes,
     };
@@ -171,6 +175,7 @@ class OrderModel {
     OrderStatus? status,
     String? deliveryOtp,
     String? deliveryInstructions,
+    String? cancellationReason,
     DateTime? createdAt,
     int? estimatedDeliveryMinutes,
   }) {
@@ -192,6 +197,7 @@ class OrderModel {
       status: status ?? this.status,
       deliveryOtp: deliveryOtp ?? this.deliveryOtp,
       deliveryInstructions: deliveryInstructions ?? this.deliveryInstructions,
+      cancellationReason: cancellationReason ?? this.cancellationReason,
       createdAt: createdAt ?? this.createdAt,
       estimatedDeliveryMinutes: estimatedDeliveryMinutes ?? this.estimatedDeliveryMinutes,
     );

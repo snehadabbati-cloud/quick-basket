@@ -592,7 +592,7 @@ class DesktopFooter extends StatelessWidget {
                       Text('quick basket', style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.w800)),
                       SizedBox(height: 6),
                       Text(
-                        'Groceries & essentials in 10–15 minutes across Koramangala, HSR Layout and BTM Layout.',
+                        'Groceries & essentials in 10–15 minutes across Nizampet (500090), KPHB Colony, Kukatpally and Miyapur.',
                         style: linkStyle,
                       ),
                     ],

@@ -288,7 +288,7 @@ class _AdminInventoryScreenState extends State<AdminInventoryScreen> {
       children: [
         AdminPageHeader(
           title: 'Store Inventory',
-          subtitle: 'Koramangala Dark Store · stock per variant',
+          subtitle: 'Nizampet Dark Store (500090) · stock per variant',
           actions: [
             OutlinedButton.icon(
               onPressed: _showImportDialog,
