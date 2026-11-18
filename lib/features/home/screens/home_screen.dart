@@ -74,7 +74,7 @@ class _HomeScreenState extends State<HomeScreen> {
   List<AddressModel> _savedAddresses = [];
   ServiceabilityResult? _serviceabilityResult;
   bool get _isAddressServiceable => _serviceabilityResult?.isServiceable ?? true;
-  int get _deliveryEtaMins => _serviceabilityResult?.estimatedMinutes ?? 12;
+  int get _deliveryEtaMins => _serviceabilityResult?.estimatedMinutes ?? 11;
   final Set<String> _deliveryInstructions = {};
   double _tipAmount = 0.0;
   String? _appliedCoupon;

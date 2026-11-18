@@ -1697,7 +1697,7 @@ class SupabaseService {
         'id': '00000000-0000-0000-0000-000000000001',
         'email': 'manager@quickbasket.com',
         'role': 'store_manager',
-        'name': 'Koramangala Store Manager',
+        'name': 'Nizampet Store Manager',
       };
     }
 

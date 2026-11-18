@@ -7,8 +7,8 @@ class AppStrings {
 
   // Delivery
   static const String deliverTo = 'Delivering to';
-  static const String defaultAddress = 'Home - Green Valley, Block B, 4th Floor';
-  static const String deliveryTimeBadge = '12 MINS';
+  static const String defaultAddress = 'Flat 301, Road No. 1, Pragathi Nagar, Nizampet (500090)';
+  static const String deliveryTimeBadge = '11 MINS';
 
   // Search
   static const String searchHint = 'Search "milk", "fresh apples", "bread"...';

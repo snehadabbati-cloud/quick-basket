@@ -21,7 +21,7 @@ class MobileHomeHeader extends StatelessWidget {
     required this.onAddressTap,
     required this.onProfileTap,
     required this.onSearchTap,
-    this.deliveryMinutes = 12,
+    this.deliveryMinutes = 11,
     this.isServiceable = true,
   });
 
@@ -363,7 +363,7 @@ class DesktopShopHeader extends StatelessWidget {
     required this.categories,
     required this.onCategoryTap,
     required this.activeTab,
-    this.deliveryMinutes = 12,
+    this.deliveryMinutes = 11,
     this.isServiceable = true,
   });
 
