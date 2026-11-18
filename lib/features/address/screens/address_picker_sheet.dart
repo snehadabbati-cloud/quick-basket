@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../../../core/constants/app_colors.dart';
 import '../../../models/address_model.dart';
+import '../../../models/delivery_area_model.dart';
 import '../../../services/supabase_service.dart';
 
 class AddressPickerSheet extends StatefulWidget {
@@ -35,6 +36,7 @@ class AddressPickerSheet extends StatefulWidget {
 
 class _AddressPickerSheetState extends State<AddressPickerSheet> {
   List<AddressModel> _addresses = [];
+  Map<String, ServiceabilityResult> _serviceabilityMap = {};
   bool _isLoading = true;
   bool _isAddingNew = false;
   bool _isSaving = false;
@@ -44,13 +46,15 @@ class _AddressPickerSheetState extends State<AddressPickerSheet> {
   final _flatController = TextEditingController();
   final _areaController = TextEditingController();
   final _landmarkController = TextEditingController();
-  final _pincodeController = TextEditingController(text: '560001');
+  final _pincodeController = TextEditingController(text: '500090');
+  ServiceabilityResult? _pincodeCheckResult;
   String? _errorMessage;
 
   @override
   void initState() {
     super.initState();
     _loadAddresses();
+    _validatePincode('500090');
   }
 
   @override
@@ -62,12 +66,29 @@ class _AddressPickerSheetState extends State<AddressPickerSheet> {
     super.dispose();
   }
 
+  Future<void> _validatePincode(String pin) async {
+    final res = await SupabaseService().checkServiceability(pincode: pin);
+    if (mounted) {
+      setState(() => _pincodeCheckResult = res);
+    }
+  }
+
   Future<void> _loadAddresses() async {
     setState(() => _isLoading = true);
     final addresses = await SupabaseService().getUserAddresses(widget.userId);
+    final Map<String, ServiceabilityResult> results = {};
+    for (final a in addresses) {
+      results[a.id] = await SupabaseService().checkServiceability(
+        pincode: a.pincode,
+        lat: a.latitude,
+        lng: a.longitude,
+      );
+    }
+
     if (mounted) {
       setState(() {
         _addresses = addresses;
+        _serviceabilityMap = results;
         _isLoading = false;
       });
     }
@@ -97,7 +118,9 @@ class _AddressPickerSheetState extends State<AddressPickerSheet> {
         flatHouseNumber: flat,
         areaStreet: area,
         landmark: landmark.isNotEmpty ? landmark : null,
-        pincode: pincode.isNotEmpty ? pincode : '560001',
+        city: 'Hyderabad',
+        state: 'Telangana',
+        pincode: pincode.isNotEmpty ? pincode : '500090',
         isDefault: _addresses.isEmpty,
       );
 
@@ -119,7 +142,7 @@ class _AddressPickerSheetState extends State<AddressPickerSheet> {
   Widget build(BuildContext context) {
     return Container(
       constraints: BoxConstraints(
-        maxHeight: MediaQuery.of(context).size.height * 0.85,
+        maxHeight: MediaQuery.of(context).size.height * 0.88,
       ),
       decoration: const BoxDecoration(
         color: Colors.white,
@@ -143,13 +166,22 @@ class _AddressPickerSheetState extends State<AddressPickerSheet> {
                 children: [
                   const Icon(Icons.location_on_rounded, color: AppColors.primary, size: 24),
                   const SizedBox(width: 8),
-                  Text(
-                    _isAddingNew ? 'Add New Address' : 'Select Delivery Address',
-                    style: const TextStyle(
-                      fontSize: 18,
-                      fontWeight: FontWeight.w800,
-                      color: AppColors.textPrimary,
-                    ),
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        _isAddingNew ? 'Add New Address' : 'Select Delivery Address',
+                        style: const TextStyle(
+                          fontSize: 17,
+                          fontWeight: FontWeight.w800,
+                          color: AppColors.textPrimary,
+                        ),
+                      ),
+                      const Text(
+                        'Nizampet Dark Store Hub (500090)',
+                        style: TextStyle(fontSize: 11, color: AppColors.textSecondary, fontWeight: FontWeight.w600),
+                      ),
+                    ],
                   ),
                 ],
               ),
@@ -162,9 +194,9 @@ class _AddressPickerSheetState extends State<AddressPickerSheet> {
           const SizedBox(height: 12),
 
           if (_isAddingNew)
-            _buildNewAddressForm()
+            Flexible(child: _buildNewAddressForm())
           else
-            _buildAddressList(),
+            Flexible(child: SingleChildScrollView(child: _buildAddressList())),
         ],
       ),
     );
@@ -185,26 +217,34 @@ class _AddressPickerSheetState extends State<AddressPickerSheet> {
         ..._addresses.map((addr) {
           final isSelected = widget.selectedAddress?.id == addr.id ||
               (widget.selectedAddress == null && addr.isDefault);
+          final srv = _serviceabilityMap[addr.id];
+          final isServiceable = srv?.isServiceable ?? true;
 
           return Container(
             margin: const EdgeInsets.only(bottom: 10),
             decoration: BoxDecoration(
-              color: isSelected ? AppColors.primaryLight.withValues(alpha: 0.3) : Colors.white,
+              color: isSelected
+                  ? (isServiceable ? AppColors.primaryLight.withValues(alpha: 0.3) : const Color(0xFFFFF3E0))
+                  : Colors.white,
               borderRadius: BorderRadius.circular(14),
               border: Border.all(
-                color: isSelected ? AppColors.primary : AppColors.border,
+                color: isSelected
+                    ? (isServiceable ? AppColors.primary : const Color(0xFFFFB74D))
+                    : AppColors.border,
                 width: isSelected ? 1.5 : 0.8,
               ),
             ),
             child: ListTile(
               onTap: () => Navigator.pop(context, addr),
               leading: CircleAvatar(
-                backgroundColor: isSelected ? AppColors.primary : Colors.grey.shade100,
+                backgroundColor: isSelected
+                    ? (isServiceable ? AppColors.primary : const Color(0xFFE65100))
+                    : (isServiceable ? Colors.grey.shade100 : const Color(0xFFFFE0B2)),
                 child: Icon(
                   addr.type == 'Home'
                       ? Icons.home_rounded
                       : (addr.type == 'Work' ? Icons.work_rounded : Icons.place_rounded),
-                  color: isSelected ? Colors.white : AppColors.textSecondary,
+                  color: isSelected ? Colors.white : (isServiceable ? AppColors.textSecondary : const Color(0xFFE65100)),
                   size: 20,
                 ),
               ),
@@ -228,6 +268,46 @@ class _AddressPickerSheetState extends State<AddressPickerSheet> {
                       ),
                     ),
                   ],
+                  const Spacer(),
+                  // Serviceability Badge
+                  if (isServiceable)
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+                      decoration: BoxDecoration(
+                        color: AppColors.primaryLight,
+                        borderRadius: BorderRadius.circular(6),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Icon(Icons.flash_on_rounded, size: 11, color: AppColors.primaryDeep),
+                          const SizedBox(width: 2),
+                          Text(
+                            '${srv?.estimatedMinutes ?? 12} MINS',
+                            style: const TextStyle(fontSize: 10, fontWeight: FontWeight.w800, color: AppColors.primaryDeep),
+                          ),
+                        ],
+                      ),
+                    )
+                  else
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFFFEBEE),
+                        borderRadius: BorderRadius.circular(6),
+                      ),
+                      child: const Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.warning_amber_rounded, size: 11, color: AppColors.error),
+                          SizedBox(width: 2),
+                          Text(
+                            'OUT OF ZONE',
+                            style: TextStyle(fontSize: 10, fontWeight: FontWeight.w800, color: AppColors.error),
+                          ),
+                        ],
+                      ),
+                    ),
                 ],
               ),
               subtitle: Padding(
@@ -238,7 +318,11 @@ class _AddressPickerSheetState extends State<AddressPickerSheet> {
                 ),
               ),
               trailing: isSelected
-                  ? const Icon(Icons.check_circle, color: AppColors.primary, size: 22)
+                  ? Icon(
+                      Icons.check_circle,
+                      color: isServiceable ? AppColors.primary : const Color(0xFFE65100),
+                      size: 22,
+                    )
                   : null,
             ),
           );
@@ -265,6 +349,9 @@ class _AddressPickerSheetState extends State<AddressPickerSheet> {
   }
 
   Widget _buildNewAddressForm() {
+    final srv = _pincodeCheckResult;
+    final isPinServiceable = srv?.isServiceable ?? true;
+
     return SingleChildScrollView(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -304,13 +391,68 @@ class _AddressPickerSheetState extends State<AddressPickerSheet> {
           ),
           const SizedBox(height: 14),
 
+          // Pincode with live geofence verification
+          const Text('Pincode (Telangana)', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+          const SizedBox(height: 6),
+          TextField(
+            controller: _pincodeController,
+            keyboardType: TextInputType.number,
+            onChanged: (val) {
+              if (val.trim().length >= 6) {
+                _validatePincode(val.trim());
+              }
+            },
+            decoration: InputDecoration(
+              hintText: 'e.g. 500090, 500072, 500085',
+              border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+              contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+              suffixIcon: IconButton(
+                icon: const Icon(Icons.check_circle_outline, size: 20),
+                onPressed: () => _validatePincode(_pincodeController.text.trim()),
+              ),
+            ),
+          ),
+          if (srv != null) ...[
+            const SizedBox(height: 6),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              decoration: BoxDecoration(
+                color: isPinServiceable ? AppColors.primaryLight : const Color(0xFFFFEBEE),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Row(
+                children: [
+                  Icon(
+                    isPinServiceable ? Icons.check_circle_rounded : Icons.info_outline_rounded,
+                    size: 15,
+                    color: isPinServiceable ? AppColors.primaryDeep : AppColors.error,
+                  ),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      isPinServiceable
+                          ? '✅ ${srv.matchedArea?.name ?? 'Nizampet Area'} · ${srv.estimatedMinutes} min delivery available'
+                          : '⚠️ Outside delivery zone (Quick Basket delivers within 5 km of Nizampet 500090)',
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w700,
+                        color: isPinServiceable ? AppColors.primaryDeep : AppColors.error,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+          const SizedBox(height: 14),
+
           // Flat / Building
           const Text('House / Flat / Floor No.', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
           const SizedBox(height: 6),
           TextField(
             controller: _flatController,
             decoration: InputDecoration(
-              hintText: 'e.g. Flat 301, 3rd Floor, Shanti Towers',
+              hintText: 'e.g. Flat 301, Sri Sai Residency',
               border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
               contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
             ),
@@ -318,12 +460,12 @@ class _AddressPickerSheetState extends State<AddressPickerSheet> {
           const SizedBox(height: 14),
 
           // Area / Street
-          const Text('Area / Street / Sector', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+          const Text('Area / Street / Colony', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
           const SizedBox(height: 6),
           TextField(
             controller: _areaController,
             decoration: InputDecoration(
-              hintText: 'e.g. 100 Feet Road, Indiranagar',
+              hintText: 'e.g. Road No. 1, Pragathi Nagar, Nizampet',
               border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
               contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
             ),
@@ -336,7 +478,7 @@ class _AddressPickerSheetState extends State<AddressPickerSheet> {
           TextField(
             controller: _landmarkController,
             decoration: InputDecoration(
-              hintText: 'e.g. Near Metro Station / Park',
+              hintText: 'e.g. Near Pragathi Nagar Lake / Gram Panchayat',
               border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
               contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
             ),

@@ -11,6 +11,7 @@ import 'package:quick_basket/services/supabase_service.dart';
 import 'package:quick_basket/models/order_model.dart';
 import 'package:quick_basket/models/cart_item_model.dart';
 import 'package:quick_basket/models/address_model.dart';
+import 'package:quick_basket/models/delivery_area_model.dart';
 import 'package:quick_basket/shared_widgets/product_card.dart';
 
 void main() {
@@ -35,8 +36,8 @@ void main() {
     expect(listViews, findsWidgets);
     expect(tester.getSize(listViews.first).height, greaterThan(100.0));
 
-    // Header + sections from the approved design
-    expect(find.text('12 minutes'), findsOneWidget);
+    // Header + sections from the approved design (Nizampet 500090 dark store ETA)
+    expect(find.text('11 minutes'), findsOneWidget);
     expect(find.text(AppStrings.exploreCategories), findsOneWidget);
 
     // Scroll to reveal product rails
@@ -81,7 +82,7 @@ void main() {
     await tester.pump();
 
     // Desktop header (no bottom navigation)
-    expect(find.text('Delivery in 12 minutes'), findsWidgets);
+    expect(find.text('Delivery in 11 minutes'), findsWidgets);
     expect(find.text('Account'), findsOneWidget);
     expect(find.text('My cart'), findsOneWidget);
 
@@ -416,6 +417,147 @@ void main() {
     final restoredCoconut = productsAfterCancel.firstWhere((p) => p.id == 'prod-7');
     expect(restoredCoconut.defaultVariant.stockQuantity, 2);
     expect(restoredCoconut.defaultVariant.isOutOfStock, isFalse);
+
+    await tester.pumpWidget(const SizedBox());
+    await tester.pump();
+  });
+
+  test('Geofencing Engine: Dark store 500090 hub and surrounding Telangana zones', () async {
+    // 1. Dark store location is centered on Nizampet, Telangana 500090
+    expect(DarkStoreConfig.hubPincode, '500090');
+    expect(DarkStoreConfig.hubCity, 'Hyderabad');
+    expect(DarkStoreConfig.hubState, 'Telangana');
+    expect(DarkStoreConfig.maxDeliveryRadiusKm, 5.5);
+
+    // 2. Primary hub pincode 500090 is deliverable with 11 mins ETA
+    expect(DarkStoreConfig.isPincodeDeliverable('500090'), isTrue);
+    expect(DarkStoreConfig.getEstimatedMinutesForPincode('500090'), 11);
+
+    // 3. Surrounding Telangana pincodes are deliverable
+    final surrounding = ['500072', '500085', '500049', '500055'];
+    for (final pin in surrounding) {
+      expect(DarkStoreConfig.isPincodeDeliverable(pin), isTrue, reason: 'Pincode $pin should be deliverable');
+    }
+
+    // 4. Distant or out-of-zone pincodes are strictly unserviceable
+    final unserviceable = ['500034', '500001', '560001', '110001'];
+    for (final pin in unserviceable) {
+      expect(DarkStoreConfig.isPincodeDeliverable(pin), isFalse, reason: 'Pincode $pin should be outside delivery zone');
+    }
+
+    // 5. Haversine distance verification: 500090 coordinates within < 0.1km, 500034 Banjara Hills > 10km
+    final distHub = DarkStoreConfig.calculateDistanceKm(
+      DarkStoreConfig.hubLatitude,
+      DarkStoreConfig.hubLongitude,
+      17.5186,
+      78.3845,
+    );
+    expect(distHub, lessThan(0.1));
+
+    final distBanjara = DarkStoreConfig.calculateDistanceKm(
+      DarkStoreConfig.hubLatitude,
+      DarkStoreConfig.hubLongitude,
+      17.4156,
+      78.4350,
+    );
+    expect(distBanjara, greaterThan(10.0));
+  });
+
+  test('SupabaseService: checkServiceability for 500090 vs unserviceable pincodes', () async {
+    final service = SupabaseService();
+
+    // 1. Serviceable check for Nizampet 500090
+    final res90 = await service.checkServiceability(pincode: '500090');
+    expect(res90.isServiceable, isTrue);
+    expect(res90.estimatedMinutes, 11);
+    expect(res90.deliveryFee, 25.0);
+    expect(res90.minOrderValue, 99.0);
+    expect(res90.freeDeliveryAbove, 199.0);
+    expect(res90.statusHeadline, contains(RegExp(r'11 mins', caseSensitive: false)));
+
+    // 2. Unserviceable check for Banjara Hills 500034
+    final res34 = await service.checkServiceability(pincode: '500034');
+    expect(res34.isServiceable, isFalse);
+    expect(res34.statusHeadline, 'Location Not Serviceable');
+    expect(res34.statusMessage, contains('500034 is outside'));
+
+    // 3. Admin Delivery Areas management
+    final areas = await service.getDeliveryAreas(onlyActive: false);
+    expect(areas.length, greaterThanOrEqualTo(5));
+    expect(areas.any((a) => a.pincode == '500090'), isTrue);
+
+    // Toggle area active status
+    final area90 = areas.firstWhere((a) => a.pincode == '500090');
+    await service.toggleDeliveryArea(area90.id, false);
+
+    final res90Inactive = await service.checkServiceability(pincode: '500090');
+    expect(res90Inactive.isServiceable, isFalse);
+
+    // Restore area active status
+    await service.toggleDeliveryArea(area90.id, true);
+    final res90Restored = await service.checkServiceability(pincode: '500090');
+    expect(res90Restored.isServiceable, isTrue);
+  });
+
+  testWidgets('Checkout enforces unserviceable location blocking and dynamic delivery fee', (WidgetTester tester) async {
+    useSize(tester, const Size(390, 844));
+
+    await tester.pumpWidget(const QuickBasketApp(useGoogleFonts: false));
+    await tester.pump();
+
+    // 1. Scroll down on home to reveal product rails and add to cart
+    await tester.drag(find.byType(ListView).first, const Offset(0, -600));
+    await tester.pumpAndSettle();
+
+    expect(find.text('ADD'), findsWidgets);
+    await tester.tap(find.text('ADD').first);
+    await tester.pumpAndSettle();
+
+    // 2. Open Cart tab
+    await tester.tap(find.text(AppStrings.navCart));
+    await tester.pumpAndSettle();
+
+    // Cart shows serviceable ETA for default Nizampet 500090
+    expect(find.textContaining('11 minutes'), findsWidgets);
+
+    // Minimum order value (₹99) is enforced: button shows "Min order ₹99"
+    expect(find.textContaining('Min order ₹99'), findsOneWidget);
+
+    // Increase quantity so cart exceeds min order value (₹99)
+    await tester.tap(find.byIcon(Icons.add_rounded).first);
+    await tester.pumpAndSettle();
+    await tester.tap(find.byIcon(Icons.add_rounded).first);
+    await tester.pumpAndSettle();
+
+    // Now min order threshold is met and "Proceed to pay" is enabled
+    expect(find.text('Proceed to pay'), findsOneWidget);
+    await tester.tap(find.text('Proceed to pay'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Checkout'), findsOneWidget);
+
+    // Place Order is enabled for serviceable address
+    expect(find.textContaining('Place Order'), findsOneWidget);
+
+    // 4. Select unserviceable address (500034 Banjara Hills)
+    final unserviceableFinder = find.textContaining('500034');
+    expect(unserviceableFinder, findsOneWidget);
+    await tester.tap(unserviceableFinder);
+    await tester.pumpAndSettle();
+
+    // Verify unserviceable badge is displayed
+    expect(find.text('OUT OF ZONE'), findsWidgets);
+
+    // Verify checkout button is disabled with Unserviceable Location notice
+    expect(find.text('Unserviceable Location · Change Address'), findsOneWidget);
+
+    // 5. Switching back to 500090 re-enables checkout
+    final serviceableFinder = find.textContaining('500090');
+    expect(serviceableFinder, findsWidgets);
+    await tester.tap(serviceableFinder.first);
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining('Place Order'), findsOneWidget);
 
     await tester.pumpWidget(const SizedBox());
     await tester.pump();

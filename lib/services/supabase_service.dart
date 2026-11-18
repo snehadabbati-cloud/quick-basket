@@ -10,6 +10,7 @@ import '../models/banner_model.dart';
 import '../models/cart_item_model.dart';
 import '../models/address_model.dart';
 import '../models/order_model.dart';
+import '../models/delivery_area_model.dart';
 import 'mock_data_service.dart';
 
 /// Central Supabase service handling client initialization,
@@ -32,6 +33,13 @@ class SupabaseService {
 
   /// Reactive notifier for real-time inventory updates across customer & admin screens
   final ValueNotifier<int> inventoryNotifier = ValueNotifier<int>(0);
+
+  /// Reactive notifier for real-time geofencing and delivery area updates
+  final ValueNotifier<int> serviceabilityNotifier = ValueNotifier<int>(0);
+
+  void notifyServiceabilityChanged() {
+    serviceabilityNotifier.value++;
+  }
 
   /// Products a store manager has switched off ("In store" toggle in the
   /// admin Products page). The customer storefront hides these.
@@ -759,89 +767,308 @@ class SupabaseService {
 
   // ==========================================
   // ADDRESSES (PRD Section 4.2 & 4.8)
+  // Centered around 500090, Hyderabad, Telangana
   // ==========================================
 
+  static const String _addressesStorageKey = 'qb_custom_addresses_v2';
+
   Future<List<AddressModel>> getUserAddresses(String userId) async {
-    if (!_isInitialized) {
-      return [
-        AddressModel(
-          id: 'mock-addr-1',
-          userId: userId,
-          type: 'Home',
-          flatHouseNumber: 'Flat 402, Green Valley Apartments',
-          areaStreet: '8th Main, Indiranagar',
-          landmark: 'Opposite Metro Station',
-          city: 'Bengaluru',
-          pincode: '560038',
-          isDefault: true,
-        ),
-      ];
-    }
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.reload();
 
-    try {
-      final response = await client
-          .from('user_addresses')
-          .select()
-          .eq('user_id', userId)
-          .order('created_at', ascending: false);
+    List<AddressModel> list = [];
 
-      final List<dynamic> data = response as List<dynamic>;
-      if (data.isEmpty) {
-        return [
-          AddressModel(
-            id: 'default-addr-1',
-            userId: userId,
-            type: 'Home',
-            flatHouseNumber: 'Flat 402, Green Valley Apartments',
-            areaStreet: '8th Main, Indiranagar',
-            landmark: 'Opposite Metro Station',
-            city: 'Bengaluru',
-            pincode: '560038',
-            isDefault: true,
-          ),
-        ];
+    // 1. Try remote Supabase DB if initialized
+    if (_isInitialized) {
+      try {
+        final response = await client
+            .from('user_addresses')
+            .select()
+            .eq('user_id', userId)
+            .order('created_at', ascending: false);
+
+        final List<dynamic> data = response as List<dynamic>;
+        if (data.isNotEmpty) {
+          list = data.map((json) => AddressModel.fromJson(json as Map<String, dynamic>)).toList();
+        }
+      } catch (e) {
+        debugPrint('[SupabaseService] Error fetching addresses: $e');
       }
+    }
 
-      return data.map((json) => AddressModel.fromJson(json as Map<String, dynamic>)).toList();
-    } catch (e) {
-      debugPrint('[SupabaseService] Error fetching addresses: $e');
-      return [
+    // 2. Default seed addresses centered around 500090 (Telangana)
+    if (list.isEmpty) {
+      list = [
         AddressModel(
-          id: 'fallback-addr-1',
+          id: 'addr-500090-home',
           userId: userId,
           type: 'Home',
-          flatHouseNumber: 'Flat 402, Green Valley Apartments',
-          areaStreet: '8th Main, Indiranagar',
-          landmark: 'Opposite Metro Station',
-          city: 'Bengaluru',
-          pincode: '560038',
+          flatHouseNumber: 'Flat 301, Sri Sai Residency',
+          areaStreet: 'Road No. 1, Pragathi Nagar',
+          landmark: 'Near Pragathi Nagar Lake',
+          city: 'Hyderabad',
+          state: 'Telangana',
+          pincode: '500090',
+          latitude: 17.5186,
+          longitude: 78.3845,
           isDefault: true,
+        ),
+        AddressModel(
+          id: 'addr-500072-work',
+          userId: userId,
+          type: 'Work',
+          flatHouseNumber: 'Office 4B, KPHB 7th Phase',
+          areaStreet: 'Main Commercial Road, Kukatpally',
+          landmark: 'Beside Forum Sujana Mall',
+          city: 'Hyderabad',
+          state: 'Telangana',
+          pincode: '500072',
+          latitude: 17.4933,
+          longitude: 78.3995,
+          isDefault: false,
+        ),
+        AddressModel(
+          id: 'addr-500034-other',
+          userId: userId,
+          type: 'Other',
+          flatHouseNumber: 'Plot 102, Road No. 12',
+          areaStreet: 'Banjara Hills',
+          landmark: 'Near City Center Mall',
+          city: 'Hyderabad',
+          state: 'Telangana',
+          pincode: '500034',
+          latitude: 17.4156,
+          longitude: 78.4350,
+          isDefault: false,
         ),
       ];
     }
+
+    // 3. Merge locally persisted user addresses
+    final raw = prefs.getString(_addressesStorageKey);
+    if (raw != null && raw.isNotEmpty) {
+      try {
+        final List<dynamic> localJson = jsonDecode(raw);
+        final localList = localJson.map((e) => AddressModel.fromJson(e as Map<String, dynamic>)).toList();
+        for (final item in localList) {
+          final idx = list.indexWhere((a) => a.id == item.id);
+          if (idx != -1) {
+            list[idx] = item;
+          } else {
+            list.insert(0, item);
+          }
+        }
+      } catch (_) {}
+    }
+
+    return list;
   }
 
   Future<AddressModel> saveAddress(AddressModel address) async {
-    if (!_isInitialized) return address;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.reload();
 
-    try {
-      final data = {
-        'user_id': address.userId,
-        'address_type': address.type,
-        'address_line1': address.flatHouseNumber,
-        'address_line2': address.areaStreet,
-        if (address.landmark != null && address.landmark!.isNotEmpty) 'landmark': address.landmark,
-        'city': address.city,
-        'state': 'Karnataka',
-        'pincode': address.pincode,
-        'is_default': address.isDefault,
-      };
+    List<Map<String, dynamic>> localList = [];
+    final raw = prefs.getString(_addressesStorageKey);
+    if (raw != null && raw.isNotEmpty) {
+      try {
+        localList = (jsonDecode(raw) as List).map((e) => Map<String, dynamic>.from(e as Map)).toList();
+      } catch (_) {}
+    }
 
-      final response = await client.from('user_addresses').insert(data).select().single();
-      return AddressModel.fromJson(response);
-    } catch (e) {
-      debugPrint('[SupabaseService] Error saving address: $e');
-      return address;
+    final idx = localList.indexWhere((e) => e['id'] == address.id);
+    if (idx != -1) {
+      localList[idx] = address.toJson();
+    } else {
+      localList.insert(0, address.toJson());
+    }
+    await prefs.setString(_addressesStorageKey, jsonEncode(localList));
+
+    if (_isInitialized) {
+      try {
+        final data = {
+          'user_id': address.userId,
+          'address_type': address.type,
+          'address_line1': address.flatHouseNumber,
+          'address_line2': address.areaStreet,
+          if (address.landmark != null && address.landmark!.isNotEmpty) 'landmark': address.landmark,
+          'city': address.city,
+          'state': address.state,
+          'pincode': address.pincode,
+          if (address.latitude != null) 'latitude': address.latitude,
+          if (address.longitude != null) 'longitude': address.longitude,
+          'is_default': address.isDefault,
+        };
+
+        final response = await client.from('user_addresses').insert(data).select().single();
+        return AddressModel.fromJson(response);
+      } catch (e) {
+        debugPrint('[SupabaseService] Error saving address to remote DB: $e');
+      }
+    }
+
+    return address;
+  }
+
+  // ==========================================
+  // GEOFENCING & SERVICEABILITY ENGINE (PRD 4.2 & 5.12)
+  // Centered around 500090 (Nizampet, Telangana)
+  // ==========================================
+
+  static const String _deliveryAreasStorageKey = 'qb_custom_delivery_areas_v1';
+  List<DeliveryAreaModel> _localDeliveryAreas = [];
+
+  /// Fetch all active delivery areas (or all for admin configuration)
+  Future<List<DeliveryAreaModel>> getDeliveryAreas({bool onlyActive = true}) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.reload();
+
+    List<DeliveryAreaModel> list = [];
+
+    // 1. Try remote Supabase DB if initialized
+    if (_isInitialized) {
+      try {
+        final query = client.from('delivery_areas').select().order('estimated_delivery_mins', ascending: true);
+        final response = await query;
+        final List<dynamic> data = response as List<dynamic>;
+        if (data.isNotEmpty) {
+          list = data.map((json) => DeliveryAreaModel.fromJson(json as Map<String, dynamic>)).toList();
+        }
+      } catch (e) {
+        debugPrint('[SupabaseService] Remote delivery areas fallback: $e');
+      }
+    }
+
+    // 2. Default seed areas centered around 500090 (Nizampet, Telangana)
+    if (list.isEmpty) {
+      list = List.from(DarkStoreConfig.defaultAreas);
+    }
+
+    // 3. Merge locally persisted overrides
+    final raw = prefs.getString(_deliveryAreasStorageKey);
+    if (raw != null && raw.isNotEmpty) {
+      try {
+        final List<dynamic> localJson = jsonDecode(raw);
+        final localList = localJson.map((e) => DeliveryAreaModel.fromJson(e as Map<String, dynamic>)).toList();
+        for (final item in localList) {
+          final idx = list.indexWhere((a) => a.id == item.id || a.pincode == item.pincode);
+          if (idx != -1) {
+            list[idx] = item;
+          } else {
+            list.add(item);
+          }
+        }
+      } catch (_) {}
+    }
+
+    _localDeliveryAreas = list;
+
+    if (onlyActive) {
+      return list.where((a) => a.isActive).toList();
+    }
+    return list;
+  }
+
+  /// Check serviceability for a given pincode or GPS coordinates against Dark Store 500090
+  Future<ServiceabilityResult> checkServiceability({
+    String? pincode,
+    double? lat,
+    double? lng,
+    String? addressText,
+  }) async {
+    final areas = await getDeliveryAreas(onlyActive: true);
+
+    String cleanPincode = (pincode ?? '').trim();
+    if (cleanPincode.isEmpty && addressText != null) {
+      final pinMatch = RegExp(r'\b(500\d{3}|50\d{4}|\d{6})\b').firstMatch(addressText);
+      if (pinMatch != null) {
+        cleanPincode = pinMatch.group(0)!;
+      }
+    }
+
+    // 1. Direct match against active delivery areas by pincode
+    if (cleanPincode.isNotEmpty) {
+      final matchedArea = areas.where((a) => a.pincode == cleanPincode).firstOrNull;
+      if (matchedArea != null) {
+        double? distance;
+        if (lat != null && lng != null) {
+          distance = DarkStoreConfig.calculateDistanceKm(
+            DarkStoreConfig.storeLatitude,
+            DarkStoreConfig.storeLongitude,
+            lat,
+            lng,
+          );
+        } else {
+          distance = DarkStoreConfig.calculateDistanceKm(
+            DarkStoreConfig.storeLatitude,
+            DarkStoreConfig.storeLongitude,
+            matchedArea.latitude,
+            matchedArea.longitude,
+          );
+        }
+        return ServiceabilityResult.serviceable(matchedArea, distance);
+      }
+    }
+
+    // 2. Coordinate-based geofence check (Haversine formula within 5.5 km of 500090)
+    if (lat != null && lng != null) {
+      final distance = DarkStoreConfig.calculateDistanceKm(
+        DarkStoreConfig.storeLatitude,
+        DarkStoreConfig.storeLongitude,
+        lat,
+        lng,
+      );
+
+      if (distance <= DarkStoreConfig.maxServiceRadiusKm) {
+        // Find closest delivery area
+        final sorted = List<DeliveryAreaModel>.from(areas);
+        sorted.sort((a, b) {
+          final distA = DarkStoreConfig.calculateDistanceKm(lat, lng, a.latitude, a.longitude);
+          final distB = DarkStoreConfig.calculateDistanceKm(lat, lng, b.latitude, b.longitude);
+          return distA.compareTo(distB);
+        });
+
+        final closest = sorted.isNotEmpty ? sorted.first : DarkStoreConfig.defaultAreas.first;
+        return ServiceabilityResult.serviceable(closest, distance);
+      } else {
+        return ServiceabilityResult.unserviceable(cleanPincode.isEmpty ? 'Location' : cleanPincode, distance);
+      }
+    }
+
+    return ServiceabilityResult.unserviceable(cleanPincode.isEmpty ? 'Unknown' : cleanPincode);
+  }
+
+  /// Update delivery area parameters (ETA, fee, min order value, active status)
+  Future<void> updateDeliveryArea(DeliveryAreaModel area) async {
+    final areas = await getDeliveryAreas(onlyActive: false);
+    final idx = areas.indexWhere((a) => a.id == area.id || a.pincode == area.pincode);
+    if (idx != -1) {
+      areas[idx] = area;
+    } else {
+      areas.add(area);
+    }
+
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.reload();
+    await prefs.setString(_deliveryAreasStorageKey, jsonEncode(areas.map((a) => a.toJson()).toList()));
+
+    if (_isInitialized) {
+      try {
+        await client.from('delivery_areas').upsert(area.toJson(), onConflict: 'pincode');
+      } catch (e) {
+        debugPrint('[SupabaseService] Remote delivery area update fallback: $e');
+      }
+    }
+
+    notifyServiceabilityChanged();
+  }
+
+  /// Toggle area serviceability (e.g. pause for rain surge or night curfew)
+  Future<void> toggleDeliveryArea(String areaId, bool isActive) async {
+    final areas = await getDeliveryAreas(onlyActive: false);
+    final area = areas.where((a) => a.id == areaId || a.pincode == areaId).firstOrNull;
+    if (area != null) {
+      await updateDeliveryArea(area.copyWith(isActive: isActive));
     }
   }
 

@@ -335,7 +335,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(name, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700)),
-                const Text('Koramangala', style: TextStyle(fontSize: 11, color: AppColors.textSecondary)),
+                const Text('Nizampet, 500090 (Telangana)', style: TextStyle(fontSize: 11, color: AppColors.textSecondary)),
               ],
             ),
           ],

@@ -11,6 +11,8 @@ class MobileHomeHeader extends StatelessWidget {
   final VoidCallback onAddressTap;
   final VoidCallback onProfileTap;
   final VoidCallback onSearchTap;
+  final int deliveryMinutes;
+  final bool isServiceable;
 
   const MobileHomeHeader({
     super.key,
@@ -19,15 +21,17 @@ class MobileHomeHeader extends StatelessWidget {
     required this.onAddressTap,
     required this.onProfileTap,
     required this.onSearchTap,
+    this.deliveryMinutes = 12,
+    this.isServiceable = true,
   });
 
   @override
   Widget build(BuildContext context) {
     return Container(
       padding: const EdgeInsets.fromLTRB(16, 18, 16, 18),
-      decoration: const BoxDecoration(
-        color: AppColors.primary,
-        borderRadius: BorderRadius.vertical(bottom: Radius.circular(24)),
+      decoration: BoxDecoration(
+        color: isServiceable ? AppColors.primary : const Color(0xFFC62828),
+        borderRadius: const BorderRadius.vertical(bottom: Radius.circular(24)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -40,24 +44,28 @@ class MobileHomeHeader extends StatelessWidget {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      'DELIVERY IN',
+                      isServiceable ? 'DELIVERY IN' : 'LOCATION UNAVAILABLE',
                       style: TextStyle(
                         color: Colors.white.withValues(alpha: 0.9),
-                        fontSize: 12,
-                        fontWeight: FontWeight.w700,
+                        fontSize: 11,
+                        fontWeight: FontWeight.w800,
                         letterSpacing: 1,
                       ),
                     ),
                     const SizedBox(height: 4),
-                    const Row(
+                    Row(
                       children: [
-                        Icon(Icons.bolt_rounded, color: AppColors.accent, size: 26),
-                        SizedBox(width: 4),
+                        Icon(
+                          isServiceable ? Icons.bolt_rounded : Icons.warning_amber_rounded,
+                          color: AppColors.accent,
+                          size: 26,
+                        ),
+                        const SizedBox(width: 4),
                         Text(
-                          '12 minutes',
+                          isServiceable ? '$deliveryMinutes minutes' : 'Out of Zone',
                           style: TextStyle(
                             color: Colors.white,
-                            fontSize: 26,
+                            fontSize: isServiceable ? 26 : 22,
                             fontWeight: FontWeight.w800,
                             letterSpacing: -0.5,
                             height: 1,
@@ -338,6 +346,8 @@ class DesktopShopHeader extends StatelessWidget {
   final List<CategoryModel> categories;
   final ValueChanged<CategoryModel> onCategoryTap;
   final int activeTab;
+  final int deliveryMinutes;
+  final bool isServiceable;
 
   const DesktopShopHeader({
     super.key,
@@ -353,6 +363,8 @@ class DesktopShopHeader extends StatelessWidget {
     required this.categories,
     required this.onCategoryTap,
     required this.activeTab,
+    this.deliveryMinutes = 12,
+    this.isServiceable = true,
   });
 
   @override
@@ -391,16 +403,24 @@ class DesktopShopHeader extends StatelessWidget {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            const Row(
+                            Row(
                               children: [
-                                Icon(Icons.bolt_rounded, color: AppColors.primary, size: 18),
-                                SizedBox(width: 4),
+                                Icon(
+                                  isServiceable ? Icons.bolt_rounded : Icons.warning_amber_rounded,
+                                  color: isServiceable ? AppColors.primary : AppColors.error,
+                                  size: 18,
+                                ),
+                                const SizedBox(width: 4),
                                 Flexible(
                                   child: Text(
-                                    'Delivery in 12 minutes',
+                                    isServiceable ? 'Delivery in $deliveryMinutes minutes' : 'Location Not Serviceable',
                                     maxLines: 1,
                                     overflow: TextOverflow.ellipsis,
-                                    style: TextStyle(fontSize: 15, fontWeight: FontWeight.w800),
+                                    style: TextStyle(
+                                      fontSize: 15,
+                                      fontWeight: FontWeight.w800,
+                                      color: isServiceable ? AppColors.textPrimary : AppColors.error,
+                                    ),
                                   ),
                                 ),
                               ],
