@@ -106,7 +106,7 @@ class _AdminOrdersBoardState extends State<AdminOrdersBoard> {
       children: [
         AdminPageHeader(
           title: 'Live Orders',
-          subtitle: '$active active orders · ${orders.where((o) => !OrderFlow.isActive(o.status) && today(o)).length} completed today',
+          subtitle: '$active active orders · ${orders.where((o) => !OrderFlow.isActive(o.status) && today(o)).length} completed / cancelled today',
           actions: [
             _dropdown<String>(
               value: _payment,
@@ -173,7 +173,7 @@ class _AdminOrdersBoardState extends State<AdminOrdersBoard> {
                 crossAxisAlignment: WrapCrossAlignment.center,
                 children: [
                   Text(doneLabel, style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w800)),
-                  const Text('Delivered and rejected orders leave the board and appear here',
+                  const Text('Delivered and cancelled orders leave the board and appear here',
                       style: TextStyle(fontSize: 12, color: AppColors.textSecondary)),
                 ],
               ),
@@ -209,8 +209,14 @@ class _AdminOrdersBoardState extends State<AdminOrdersBoard> {
                               const SizedBox(width: 8),
                               Text(qbRupees(o.grandTotal), style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 13)),
                               const SizedBox(width: 8),
-                              Text(ok ? 'DELIVERED' : 'REJECTED',
-                                  style: TextStyle(fontSize: 11, fontWeight: FontWeight.w800, color: ink)),
+                              Text(
+                                ok
+                                    ? 'DELIVERED'
+                                    : ((o.cancelledBy == 'store' || o.cancellationReason == 'Cancelled by store')
+                                        ? 'CANCELLED (STORE)'
+                                        : 'CANCELLED (CUSTOMER)'),
+                                style: TextStyle(fontSize: 11, fontWeight: FontWeight.w800, color: ink),
+                              ),
                             ],
                           ),
                         ),

@@ -10,6 +10,7 @@ import '../models/banner_model.dart';
 import '../models/cart_item_model.dart';
 import '../models/address_model.dart';
 import '../models/order_model.dart';
+import '../models/delivery_area_model.dart';
 import 'mock_data_service.dart';
 
 /// Central Supabase service handling client initialization,
@@ -32,6 +33,13 @@ class SupabaseService {
 
   /// Reactive notifier for real-time inventory updates across customer & admin screens
   final ValueNotifier<int> inventoryNotifier = ValueNotifier<int>(0);
+
+  /// Reactive notifier for real-time geofencing and delivery area updates
+  final ValueNotifier<int> serviceabilityNotifier = ValueNotifier<int>(0);
+
+  void notifyServiceabilityChanged() {
+    serviceabilityNotifier.value++;
+  }
 
   /// Products a store manager has switched off ("In store" toggle in the
   /// admin Products page). The customer storefront hides these.
@@ -759,89 +767,308 @@ class SupabaseService {
 
   // ==========================================
   // ADDRESSES (PRD Section 4.2 & 4.8)
+  // Centered around 500090, Hyderabad, Telangana
   // ==========================================
 
+  static const String _addressesStorageKey = 'qb_custom_addresses_v2';
+
   Future<List<AddressModel>> getUserAddresses(String userId) async {
-    if (!_isInitialized) {
-      return [
-        AddressModel(
-          id: 'mock-addr-1',
-          userId: userId,
-          type: 'Home',
-          flatHouseNumber: 'Flat 402, Green Valley Apartments',
-          areaStreet: '8th Main, Indiranagar',
-          landmark: 'Opposite Metro Station',
-          city: 'Bengaluru',
-          pincode: '560038',
-          isDefault: true,
-        ),
-      ];
-    }
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.reload();
 
-    try {
-      final response = await client
-          .from('user_addresses')
-          .select()
-          .eq('user_id', userId)
-          .order('created_at', ascending: false);
+    List<AddressModel> list = [];
 
-      final List<dynamic> data = response as List<dynamic>;
-      if (data.isEmpty) {
-        return [
-          AddressModel(
-            id: 'default-addr-1',
-            userId: userId,
-            type: 'Home',
-            flatHouseNumber: 'Flat 402, Green Valley Apartments',
-            areaStreet: '8th Main, Indiranagar',
-            landmark: 'Opposite Metro Station',
-            city: 'Bengaluru',
-            pincode: '560038',
-            isDefault: true,
-          ),
-        ];
+    // 1. Try remote Supabase DB if initialized
+    if (_isInitialized) {
+      try {
+        final response = await client
+            .from('user_addresses')
+            .select()
+            .eq('user_id', userId)
+            .order('created_at', ascending: false);
+
+        final List<dynamic> data = response as List<dynamic>;
+        if (data.isNotEmpty) {
+          list = data.map((json) => AddressModel.fromJson(json as Map<String, dynamic>)).toList();
+        }
+      } catch (e) {
+        debugPrint('[SupabaseService] Error fetching addresses: $e');
       }
+    }
 
-      return data.map((json) => AddressModel.fromJson(json as Map<String, dynamic>)).toList();
-    } catch (e) {
-      debugPrint('[SupabaseService] Error fetching addresses: $e');
-      return [
+    // 2. Default seed addresses centered around 500090 (Telangana)
+    if (list.isEmpty) {
+      list = [
         AddressModel(
-          id: 'fallback-addr-1',
+          id: 'addr-500090-home',
           userId: userId,
           type: 'Home',
-          flatHouseNumber: 'Flat 402, Green Valley Apartments',
-          areaStreet: '8th Main, Indiranagar',
-          landmark: 'Opposite Metro Station',
-          city: 'Bengaluru',
-          pincode: '560038',
+          flatHouseNumber: 'Flat 301, Sri Sai Residency',
+          areaStreet: 'Road No. 1, Pragathi Nagar',
+          landmark: 'Near Pragathi Nagar Lake',
+          city: 'Hyderabad',
+          state: 'Telangana',
+          pincode: '500090',
+          latitude: 17.5186,
+          longitude: 78.3845,
           isDefault: true,
+        ),
+        AddressModel(
+          id: 'addr-500072-work',
+          userId: userId,
+          type: 'Work',
+          flatHouseNumber: 'Office 4B, KPHB 7th Phase',
+          areaStreet: 'Main Commercial Road, Kukatpally',
+          landmark: 'Beside Forum Sujana Mall',
+          city: 'Hyderabad',
+          state: 'Telangana',
+          pincode: '500072',
+          latitude: 17.4933,
+          longitude: 78.3995,
+          isDefault: false,
+        ),
+        AddressModel(
+          id: 'addr-500034-other',
+          userId: userId,
+          type: 'Other',
+          flatHouseNumber: 'Plot 102, Road No. 12',
+          areaStreet: 'Banjara Hills',
+          landmark: 'Near City Center Mall',
+          city: 'Hyderabad',
+          state: 'Telangana',
+          pincode: '500034',
+          latitude: 17.4156,
+          longitude: 78.4350,
+          isDefault: false,
         ),
       ];
     }
+
+    // 3. Merge locally persisted user addresses
+    final raw = prefs.getString(_addressesStorageKey);
+    if (raw != null && raw.isNotEmpty) {
+      try {
+        final List<dynamic> localJson = jsonDecode(raw);
+        final localList = localJson.map((e) => AddressModel.fromJson(e as Map<String, dynamic>)).toList();
+        for (final item in localList) {
+          final idx = list.indexWhere((a) => a.id == item.id);
+          if (idx != -1) {
+            list[idx] = item;
+          } else {
+            list.insert(0, item);
+          }
+        }
+      } catch (_) {}
+    }
+
+    return list;
   }
 
   Future<AddressModel> saveAddress(AddressModel address) async {
-    if (!_isInitialized) return address;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.reload();
 
-    try {
-      final data = {
-        'user_id': address.userId,
-        'address_type': address.type,
-        'address_line1': address.flatHouseNumber,
-        'address_line2': address.areaStreet,
-        if (address.landmark != null && address.landmark!.isNotEmpty) 'landmark': address.landmark,
-        'city': address.city,
-        'state': 'Karnataka',
-        'pincode': address.pincode,
-        'is_default': address.isDefault,
-      };
+    List<Map<String, dynamic>> localList = [];
+    final raw = prefs.getString(_addressesStorageKey);
+    if (raw != null && raw.isNotEmpty) {
+      try {
+        localList = (jsonDecode(raw) as List).map((e) => Map<String, dynamic>.from(e as Map)).toList();
+      } catch (_) {}
+    }
 
-      final response = await client.from('user_addresses').insert(data).select().single();
-      return AddressModel.fromJson(response);
-    } catch (e) {
-      debugPrint('[SupabaseService] Error saving address: $e');
-      return address;
+    final idx = localList.indexWhere((e) => e['id'] == address.id);
+    if (idx != -1) {
+      localList[idx] = address.toJson();
+    } else {
+      localList.insert(0, address.toJson());
+    }
+    await prefs.setString(_addressesStorageKey, jsonEncode(localList));
+
+    if (_isInitialized) {
+      try {
+        final data = {
+          'user_id': address.userId,
+          'address_type': address.type,
+          'address_line1': address.flatHouseNumber,
+          'address_line2': address.areaStreet,
+          if (address.landmark != null && address.landmark!.isNotEmpty) 'landmark': address.landmark,
+          'city': address.city,
+          'state': address.state,
+          'pincode': address.pincode,
+          if (address.latitude != null) 'latitude': address.latitude,
+          if (address.longitude != null) 'longitude': address.longitude,
+          'is_default': address.isDefault,
+        };
+
+        final response = await client.from('user_addresses').insert(data).select().single();
+        return AddressModel.fromJson(response);
+      } catch (e) {
+        debugPrint('[SupabaseService] Error saving address to remote DB: $e');
+      }
+    }
+
+    return address;
+  }
+
+  // ==========================================
+  // GEOFENCING & SERVICEABILITY ENGINE (PRD 4.2 & 5.12)
+  // Centered around 500090 (Nizampet, Telangana)
+  // ==========================================
+
+  static const String _deliveryAreasStorageKey = 'qb_custom_delivery_areas_v1';
+  List<DeliveryAreaModel> _localDeliveryAreas = [];
+
+  /// Fetch all active delivery areas (or all for admin configuration)
+  Future<List<DeliveryAreaModel>> getDeliveryAreas({bool onlyActive = true}) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.reload();
+
+    List<DeliveryAreaModel> list = [];
+
+    // 1. Try remote Supabase DB if initialized
+    if (_isInitialized) {
+      try {
+        final query = client.from('delivery_areas').select().order('estimated_delivery_mins', ascending: true);
+        final response = await query;
+        final List<dynamic> data = response as List<dynamic>;
+        if (data.isNotEmpty) {
+          list = data.map((json) => DeliveryAreaModel.fromJson(json as Map<String, dynamic>)).toList();
+        }
+      } catch (e) {
+        debugPrint('[SupabaseService] Remote delivery areas fallback: $e');
+      }
+    }
+
+    // 2. Default seed areas centered around 500090 (Nizampet, Telangana)
+    if (list.isEmpty) {
+      list = List.from(DarkStoreConfig.defaultAreas);
+    }
+
+    // 3. Merge locally persisted overrides
+    final raw = prefs.getString(_deliveryAreasStorageKey);
+    if (raw != null && raw.isNotEmpty) {
+      try {
+        final List<dynamic> localJson = jsonDecode(raw);
+        final localList = localJson.map((e) => DeliveryAreaModel.fromJson(e as Map<String, dynamic>)).toList();
+        for (final item in localList) {
+          final idx = list.indexWhere((a) => a.id == item.id || a.pincode == item.pincode);
+          if (idx != -1) {
+            list[idx] = item;
+          } else {
+            list.add(item);
+          }
+        }
+      } catch (_) {}
+    }
+
+    _localDeliveryAreas = list;
+
+    if (onlyActive) {
+      return list.where((a) => a.isActive).toList();
+    }
+    return list;
+  }
+
+  /// Check serviceability for a given pincode or GPS coordinates against Dark Store 500090
+  Future<ServiceabilityResult> checkServiceability({
+    String? pincode,
+    double? lat,
+    double? lng,
+    String? addressText,
+  }) async {
+    final areas = await getDeliveryAreas(onlyActive: true);
+
+    String cleanPincode = (pincode ?? '').trim();
+    if (cleanPincode.isEmpty && addressText != null) {
+      final pinMatch = RegExp(r'\b(500\d{3}|50\d{4}|\d{6})\b').firstMatch(addressText);
+      if (pinMatch != null) {
+        cleanPincode = pinMatch.group(0)!;
+      }
+    }
+
+    // 1. Direct match against active delivery areas by pincode
+    if (cleanPincode.isNotEmpty) {
+      final matchedArea = areas.where((a) => a.pincode == cleanPincode).firstOrNull;
+      if (matchedArea != null) {
+        double? distance;
+        if (lat != null && lng != null) {
+          distance = DarkStoreConfig.calculateDistanceKm(
+            DarkStoreConfig.storeLatitude,
+            DarkStoreConfig.storeLongitude,
+            lat,
+            lng,
+          );
+        } else {
+          distance = DarkStoreConfig.calculateDistanceKm(
+            DarkStoreConfig.storeLatitude,
+            DarkStoreConfig.storeLongitude,
+            matchedArea.latitude,
+            matchedArea.longitude,
+          );
+        }
+        return ServiceabilityResult.serviceable(matchedArea, distance);
+      }
+    }
+
+    // 2. Coordinate-based geofence check (Haversine formula within 5.5 km of 500090)
+    if (lat != null && lng != null) {
+      final distance = DarkStoreConfig.calculateDistanceKm(
+        DarkStoreConfig.storeLatitude,
+        DarkStoreConfig.storeLongitude,
+        lat,
+        lng,
+      );
+
+      if (distance <= DarkStoreConfig.maxServiceRadiusKm) {
+        // Find closest delivery area
+        final sorted = List<DeliveryAreaModel>.from(areas);
+        sorted.sort((a, b) {
+          final distA = DarkStoreConfig.calculateDistanceKm(lat, lng, a.latitude, a.longitude);
+          final distB = DarkStoreConfig.calculateDistanceKm(lat, lng, b.latitude, b.longitude);
+          return distA.compareTo(distB);
+        });
+
+        final closest = sorted.isNotEmpty ? sorted.first : DarkStoreConfig.defaultAreas.first;
+        return ServiceabilityResult.serviceable(closest, distance);
+      } else {
+        return ServiceabilityResult.unserviceable(cleanPincode.isEmpty ? 'Location' : cleanPincode, distance);
+      }
+    }
+
+    return ServiceabilityResult.unserviceable(cleanPincode.isEmpty ? 'Unknown' : cleanPincode);
+  }
+
+  /// Update delivery area parameters (ETA, fee, min order value, active status)
+  Future<void> updateDeliveryArea(DeliveryAreaModel area) async {
+    final areas = await getDeliveryAreas(onlyActive: false);
+    final idx = areas.indexWhere((a) => a.id == area.id || a.pincode == area.pincode);
+    if (idx != -1) {
+      areas[idx] = area;
+    } else {
+      areas.add(area);
+    }
+
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.reload();
+    await prefs.setString(_deliveryAreasStorageKey, jsonEncode(areas.map((a) => a.toJson()).toList()));
+
+    if (_isInitialized) {
+      try {
+        await client.from('delivery_areas').upsert(area.toJson(), onConflict: 'pincode');
+      } catch (e) {
+        debugPrint('[SupabaseService] Remote delivery area update fallback: $e');
+      }
+    }
+
+    notifyServiceabilityChanged();
+  }
+
+  /// Toggle area serviceability (e.g. pause for rain surge or night curfew)
+  Future<void> toggleDeliveryArea(String areaId, bool isActive) async {
+    final areas = await getDeliveryAreas(onlyActive: false);
+    final area = areas.where((a) => a.id == areaId || a.pincode == areaId).firstOrNull;
+    if (area != null) {
+      await updateDeliveryArea(area.copyWith(isActive: isActive));
     }
   }
 
@@ -933,11 +1160,15 @@ class SupabaseService {
 
       final isAddrUuid = RegExp(r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$').hasMatch(address.id);
       final encodedInstructions = _encodeItemsInInstructions(deliveryInstructions, items);
+      final currentAuthUser = client.auth.currentUser;
+      final effectiveUserId = (currentAuthUser != null && currentAuthUser.id.isNotEmpty)
+          ? currentAuthUser.id
+          : (isUuid ? userId : (userId.isNotEmpty && userId != '00000000-0000-0000-0000-000000000000' ? userId : null));
 
       // 2. Insert into orders table
       final orderData = {
         'order_number': orderNum,
-        'user_id': validUserId,
+        if (effectiveUserId != null) 'user_id': effectiveUserId,
         'store_id': storeId,
         'address_id': isAddrUuid ? address.id : null,
         'item_total': itemTotal,
@@ -946,10 +1177,11 @@ class SupabaseService {
         'taxes': packagingFee,
         'grand_total': grandTotal,
         'payment_method': paymentMethod,
-        'payment_status': paymentMethod == 'cod' ? 'pending' : 'completed',
+        'payment_status': paymentMethod == 'cod' ? 'pending' : 'captured',
         'order_status': 'placed',
         'delivery_otp': '${1000 + (DateTime.now().millisecond * 9) % 9000}',
         'delivery_instructions': encodedInstructions,
+        'refund_status': 'none',
       };
 
       final orderRes = await client.from('orders').insert(orderData).select().single();
@@ -971,6 +1203,16 @@ class SupabaseService {
           debugPrint('[SupabaseService] Error inserting order item: $itemErr');
         }
       }
+
+      // 4. Record initial status history
+      try {
+        await client.from('order_status_history').insert({
+          'order_id': newOrderId,
+          'status': 'placed',
+          'notes': 'Order placed by customer',
+          if (effectiveUserId != null) 'created_by': effectiveUserId,
+        });
+      } catch (_) {}
 
       final createdOrder = OrderModel.fromJson(orderRes, items: items, address: address);
       _localOrders.insert(0, createdOrder);
@@ -1005,10 +1247,11 @@ class SupabaseService {
         tipAmount: tipAmount,
         grandTotal: grandTotal,
         paymentMethod: paymentMethod,
-        paymentStatus: paymentMethod == 'cod' ? 'pending' : 'completed',
+        paymentStatus: paymentMethod == 'cod' ? 'pending' : 'captured',
         status: OrderStatus.placed,
         deliveryOtp: '${1000 + (DateTime.now().millisecond * 9) % 9000}',
         deliveryInstructions: deliveryInstructions,
+        refundStatus: 'none',
       );
       _localOrders.insert(0, localOrder);
       await _persistCustomOrders();
@@ -1055,6 +1298,38 @@ class SupabaseService {
         await prefs.setString('qb_status_${o.orderNumber}', o.status.value);
         await prefs.setString('qb_status_$cleanNum', o.status.value);
         await prefs.setString('qb_status_#$cleanNum', o.status.value);
+
+        if (o.cancellationReason != null) {
+          await prefs.setString('qb_cancel_reason_${o.id}', o.cancellationReason!);
+          await prefs.setString('qb_cancel_reason_${o.orderNumber}', o.cancellationReason!);
+          await prefs.setString('qb_cancel_reason_$cleanNum', o.cancellationReason!);
+          await prefs.setString('qb_cancel_reason_#$cleanNum', o.cancellationReason!);
+        }
+        if (o.cancelledBy != null) {
+          await prefs.setString('qb_cancelled_by_${o.id}', o.cancelledBy!);
+          await prefs.setString('qb_cancelled_by_${o.orderNumber}', o.cancelledBy!);
+          await prefs.setString('qb_cancelled_by_$cleanNum', o.cancelledBy!);
+          await prefs.setString('qb_cancelled_by_#$cleanNum', o.cancelledBy!);
+        }
+        if (o.cancelledAt != null) {
+          final cat = o.cancelledAt!.toIso8601String();
+          await prefs.setString('qb_cancelled_at_${o.id}', cat);
+          await prefs.setString('qb_cancelled_at_${o.orderNumber}', cat);
+          await prefs.setString('qb_cancelled_at_$cleanNum', cat);
+          await prefs.setString('qb_cancelled_at_#$cleanNum', cat);
+        }
+        if (o.refundStatus != null) {
+          await prefs.setString('qb_refund_status_${o.id}', o.refundStatus!);
+          await prefs.setString('qb_refund_status_${o.orderNumber}', o.refundStatus!);
+          await prefs.setString('qb_refund_status_$cleanNum', o.refundStatus!);
+          await prefs.setString('qb_refund_status_#$cleanNum', o.refundStatus!);
+        }
+        if (o.paymentStatus.isNotEmpty) {
+          await prefs.setString('qb_payment_status_${o.id}', o.paymentStatus);
+          await prefs.setString('qb_payment_status_${o.orderNumber}', o.paymentStatus);
+          await prefs.setString('qb_payment_status_$cleanNum', o.paymentStatus);
+          await prefs.setString('qb_payment_status_#$cleanNum', o.paymentStatus);
+        }
       }
     } catch (e) {
       debugPrint('[SupabaseService] Error persisting custom orders: $e');
@@ -1083,6 +1358,12 @@ class SupabaseService {
             _localOrders.insert(0, order);
           } else {
             _localOrders[idx] = _localOrders[idx].copyWith(
+              status: order.status,
+              cancelledBy: order.cancelledBy ?? _localOrders[idx].cancelledBy,
+              cancellationReason: order.cancellationReason ?? _localOrders[idx].cancellationReason,
+              cancelledAt: order.cancelledAt ?? _localOrders[idx].cancelledAt,
+              refundStatus: order.refundStatus ?? _localOrders[idx].refundStatus,
+              paymentStatus: order.paymentStatus.isNotEmpty ? order.paymentStatus : _localOrders[idx].paymentStatus,
               items: _localOrders[idx].items.isEmpty && order.items.isNotEmpty ? order.items : _localOrders[idx].items,
             );
           }
@@ -1095,17 +1376,46 @@ class SupabaseService {
 
   OrderModel _syncOrderWithLatestStatus(OrderModel order, SharedPreferences prefs) {
     final cleanNum = order.orderNumber.replaceAll('#', '').trim();
-    final saved = prefs.getString('qb_status_${order.id}') ??
+    final savedStatus = prefs.getString('qb_status_${order.id}') ??
         prefs.getString('qb_status_${order.orderNumber}') ??
         prefs.getString('qb_status_$cleanNum') ??
         prefs.getString('qb_status_#$cleanNum');
-    if (saved != null) {
-      final latest = OrderStatusExtension.fromString(saved);
-      if (order.status != latest) {
-        return order.copyWith(status: latest);
-      }
-    }
-    return order;
+    final reason = prefs.getString('qb_cancel_reason_${order.id}') ??
+        prefs.getString('qb_cancel_reason_${order.orderNumber}') ??
+        prefs.getString('qb_cancel_reason_$cleanNum') ??
+        prefs.getString('qb_cancel_reason_#$cleanNum') ??
+        order.cancellationReason;
+    final by = prefs.getString('qb_cancelled_by_${order.id}') ??
+        prefs.getString('qb_cancelled_by_${order.orderNumber}') ??
+        prefs.getString('qb_cancelled_by_$cleanNum') ??
+        prefs.getString('qb_cancelled_by_#$cleanNum') ??
+        order.cancelledBy;
+    final atStr = prefs.getString('qb_cancelled_at_${order.id}') ??
+        prefs.getString('qb_cancelled_at_${order.orderNumber}') ??
+        prefs.getString('qb_cancelled_at_$cleanNum') ??
+        prefs.getString('qb_cancelled_at_#$cleanNum');
+    final refund = prefs.getString('qb_refund_status_${order.id}') ??
+        prefs.getString('qb_refund_status_${order.orderNumber}') ??
+        prefs.getString('qb_refund_status_$cleanNum') ??
+        prefs.getString('qb_refund_status_#$cleanNum') ??
+        order.refundStatus;
+    final payStatus = prefs.getString('qb_payment_status_${order.id}') ??
+        prefs.getString('qb_payment_status_${order.orderNumber}') ??
+        prefs.getString('qb_payment_status_$cleanNum') ??
+        prefs.getString('qb_payment_status_#$cleanNum') ??
+        order.paymentStatus;
+
+    final latestStatus = savedStatus != null ? OrderStatusExtension.fromString(savedStatus) : order.status;
+    final parsedAt = atStr != null ? DateTime.tryParse(atStr) : order.cancelledAt;
+
+    return order.copyWith(
+      status: latestStatus,
+      cancellationReason: reason,
+      cancelledBy: by,
+      cancelledAt: parsedAt,
+      refundStatus: refund,
+      paymentStatus: payStatus,
+    );
   }
 
   Future<List<OrderModel>> getUserOrders(String userId) async {
@@ -1470,7 +1780,7 @@ class SupabaseService {
         'id': '00000000-0000-0000-0000-000000000001',
         'email': 'manager@quickbasket.com',
         'role': 'store_manager',
-        'name': 'Koramangala Store Manager',
+        'name': 'Nizampet Store Manager',
       };
     }
 
@@ -1581,7 +1891,15 @@ class SupabaseService {
   }
 
   /// Update order status from Store Manager Dashboard (PRD Section 6.2)
-  Future<bool> updateOrderStatus(String orderId, OrderStatus newStatus) async {
+  Future<bool> updateOrderStatus(
+    String orderId,
+    OrderStatus newStatus, {
+    String? cancellationReason,
+    String? cancelledBy,
+    DateTime? cancelledAt,
+    String? refundStatus,
+    String? paymentStatus,
+  }) async {
     final cleanId = orderId.replaceAll('#', '').trim();
     final index = _localOrders.indexWhere((o) {
       final cleanNum = o.orderNumber.replaceAll('#', '').trim();
@@ -1591,6 +1909,9 @@ class SupabaseService {
           cleanNum == cleanId;
     });
 
+    final isCancelled = newStatus == OrderStatus.cancelled;
+    final effectiveCancelledAt = isCancelled ? (cancelledAt ?? DateTime.now()) : null;
+
     // 1. Persist status to cross-tab shared storage FIRST so any immediate reads see the new status
     try {
       final prefs = await SharedPreferences.getInstance();
@@ -1598,14 +1919,94 @@ class SupabaseService {
       await prefs.setString('qb_status_$orderId', newStatus.value);
       await prefs.setString('qb_status_$cleanId', newStatus.value);
       await prefs.setString('qb_status_#$cleanId', newStatus.value);
-      if (index != -1) {
-        final o = _localOrders[index];
+
+      if (cancellationReason != null) {
+        await prefs.setString('qb_cancel_reason_$orderId', cancellationReason);
+        await prefs.setString('qb_cancel_reason_$cleanId', cancellationReason);
+        await prefs.setString('qb_cancel_reason_#$cleanId', cancellationReason);
+      }
+      if (cancelledBy != null) {
+        await prefs.setString('qb_cancelled_by_$orderId', cancelledBy);
+        await prefs.setString('qb_cancelled_by_$cleanId', cancelledBy);
+        await prefs.setString('qb_cancelled_by_#$cleanId', cancelledBy);
+      }
+      if (effectiveCancelledAt != null) {
+        final cat = effectiveCancelledAt.toIso8601String();
+        await prefs.setString('qb_cancelled_at_$orderId', cat);
+        await prefs.setString('qb_cancelled_at_$cleanId', cat);
+        await prefs.setString('qb_cancelled_at_#$cleanId', cat);
+      }
+      if (refundStatus != null) {
+        await prefs.setString('qb_refund_status_$orderId', refundStatus);
+        await prefs.setString('qb_refund_status_$cleanId', refundStatus);
+        await prefs.setString('qb_refund_status_#$cleanId', refundStatus);
+      }
+      if (paymentStatus != null) {
+        await prefs.setString('qb_payment_status_$orderId', paymentStatus);
+        await prefs.setString('qb_payment_status_$cleanId', paymentStatus);
+        await prefs.setString('qb_payment_status_#$cleanId', paymentStatus);
+      }
+
+      if (index == -1) {
+        _loadCustomOrdersFromPrefs(prefs);
+      }
+      final targetIdx = index != -1
+          ? index
+          : _localOrders.indexWhere((o) {
+              final cleanNum = o.orderNumber.replaceAll('#', '').trim();
+              return o.id == orderId ||
+                  o.id == cleanId ||
+                  o.orderNumber == orderId ||
+                  cleanNum == cleanId;
+            });
+      if (targetIdx != -1) {
+        final o = _localOrders[targetIdx];
         final cleanNum = o.orderNumber.replaceAll('#', '').trim();
         await prefs.setString('qb_status_${o.id}', newStatus.value);
         await prefs.setString('qb_status_${o.orderNumber}', newStatus.value);
         await prefs.setString('qb_status_$cleanNum', newStatus.value);
         await prefs.setString('qb_status_#$cleanNum', newStatus.value);
-        _localOrders[index] = o.copyWith(status: newStatus);
+
+        if (cancellationReason != null) {
+          await prefs.setString('qb_cancel_reason_${o.id}', cancellationReason);
+          await prefs.setString('qb_cancel_reason_${o.orderNumber}', cancellationReason);
+          await prefs.setString('qb_cancel_reason_$cleanNum', cancellationReason);
+          await prefs.setString('qb_cancel_reason_#$cleanNum', cancellationReason);
+        }
+        if (cancelledBy != null) {
+          await prefs.setString('qb_cancelled_by_${o.id}', cancelledBy);
+          await prefs.setString('qb_cancelled_by_${o.orderNumber}', cancelledBy);
+          await prefs.setString('qb_cancelled_by_$cleanNum', cancelledBy);
+          await prefs.setString('qb_cancelled_by_#$cleanNum', cancelledBy);
+        }
+        if (effectiveCancelledAt != null) {
+          final cat = effectiveCancelledAt.toIso8601String();
+          await prefs.setString('qb_cancelled_at_${o.id}', cat);
+          await prefs.setString('qb_cancelled_at_${o.orderNumber}', cat);
+          await prefs.setString('qb_cancelled_at_$cleanNum', cat);
+          await prefs.setString('qb_cancelled_at_#$cleanNum', cat);
+        }
+        if (refundStatus != null) {
+          await prefs.setString('qb_refund_status_${o.id}', refundStatus);
+          await prefs.setString('qb_refund_status_${o.orderNumber}', refundStatus);
+          await prefs.setString('qb_refund_status_$cleanNum', refundStatus);
+          await prefs.setString('qb_refund_status_#$cleanNum', refundStatus);
+        }
+        if (paymentStatus != null) {
+          await prefs.setString('qb_payment_status_${o.id}', paymentStatus);
+          await prefs.setString('qb_payment_status_${o.orderNumber}', paymentStatus);
+          await prefs.setString('qb_payment_status_$cleanNum', paymentStatus);
+          await prefs.setString('qb_payment_status_#$cleanNum', paymentStatus);
+        }
+
+        _localOrders[targetIdx] = o.copyWith(
+          status: newStatus,
+          cancellationReason: cancellationReason ?? o.cancellationReason,
+          cancelledBy: cancelledBy ?? o.cancelledBy,
+          cancelledAt: effectiveCancelledAt ?? o.cancelledAt,
+          refundStatus: refundStatus ?? o.refundStatus,
+          paymentStatus: paymentStatus ?? o.paymentStatus,
+        );
         await _persistCustomOrders();
       }
     } catch (e) {
@@ -1613,22 +2014,40 @@ class SupabaseService {
     }
 
     // 2. Update local memory and notify listeners
-    if (index != -1) {
-      _notifyOrdersChanged();
-    }
+    _notifyOrdersChanged();
 
     if (!_isInitialized) return true;
 
     try {
-      if (_isUuid(cleanId)) {
-        await client.from('orders').update({
-          'order_status': newStatus.value,
-        }).eq('id', cleanId);
+      final updateData = <String, dynamic>{
+        'order_status': newStatus.value,
+      };
+      if (isCancelled) {
+        if (cancelledBy != null) updateData['cancelled_by'] = cancelledBy;
+        if (cancellationReason != null) updateData['cancellation_reason'] = cancellationReason;
+        updateData['cancelled_at'] = (effectiveCancelledAt ?? DateTime.now()).toIso8601String();
+        if (refundStatus != null) updateData['refund_status'] = refundStatus;
+        if (paymentStatus != null) updateData['payment_status'] = paymentStatus;
       } else {
-        await client.from('orders').update({
-          'order_status': newStatus.value,
-        }).or('order_number.eq.$cleanId,order_number.eq.#$cleanId');
+        if (paymentStatus != null) updateData['payment_status'] = paymentStatus;
+        if (refundStatus != null) updateData['refund_status'] = refundStatus;
       }
+
+      if (_isUuid(cleanId)) {
+        await client.from('orders').update(updateData).eq('id', cleanId);
+      } else {
+        await client.from('orders').update(updateData).or('order_number.eq.$cleanId,order_number.eq.#$cleanId');
+      }
+
+      // Record status history in Supabase - never delete!
+      try {
+        await client.from('order_status_history').insert({
+          'order_id': cleanId,
+          'status': newStatus.value,
+          'notes': cancellationReason ?? 'Status changed to ${newStatus.displayName}',
+        });
+      } catch (_) {}
+
       return true;
     } catch (e) {
       debugPrint('[SupabaseService] Error updating order status in DB: $e');
@@ -1647,6 +2066,9 @@ class SupabaseService {
       final savedVal = prefs.getString('qb_status_$orderIdOrNumber') ??
           prefs.getString('qb_status_$cleanId') ??
           prefs.getString('qb_status_#$cleanId');
+      final savedReason = prefs.getString('qb_cancel_reason_$orderIdOrNumber') ??
+          prefs.getString('qb_cancel_reason_$cleanId') ??
+          prefs.getString('qb_cancel_reason_#$cleanId');
       if (savedVal != null) {
         final parsed = OrderStatusExtension.fromString(savedVal);
         final localIdx = _localOrders.indexWhere((o) {
@@ -1656,9 +2078,15 @@ class SupabaseService {
               o.orderNumber == orderIdOrNumber ||
               cleanNum == cleanId;
         });
-        if (localIdx != -1 && _localOrders[localIdx].status != parsed) {
-          _localOrders[localIdx] = _localOrders[localIdx].copyWith(status: parsed);
-          _notifyOrdersChanged();
+        if (localIdx != -1) {
+          final current = _localOrders[localIdx];
+          if (current.status != parsed || (savedReason != null && current.cancellationReason != savedReason)) {
+            _localOrders[localIdx] = current.copyWith(
+              status: parsed,
+              cancellationReason: savedReason ?? current.cancellationReason,
+            );
+            _notifyOrdersChanged();
+          }
         }
         return parsed;
       }
@@ -1949,14 +2377,31 @@ class SupabaseService {
   }
 
   /// Cancel an order within cancellation window and auto-restore stock
-  Future<bool> cancelOrder(String orderId) async {
-    final order = getOrderById(orderId);
+  Future<bool> cancelOrder(
+    String orderId, {
+    String reason = 'Cancelled by customer',
+    String cancelledBy = 'customer',
+  }) async {
+    final cleanId = orderId.replaceAll('#', '').trim();
+    final order = getOrderById(orderId) ?? getOrderById(cleanId) ?? getOrderById('#$cleanId');
     if (order == null) return false;
     if (order.status == OrderStatus.delivered || order.status == OrderStatus.cancelled) {
       return false;
     }
 
-    await updateOrderStatus(orderId, OrderStatus.cancelled);
+    final isCod = order.isCod;
+    final refundStatus = isCod ? 'none' : 'initiated';
+    final paymentStatus = isCod ? 'pending' : 'refunded';
+
+    await updateOrderStatus(
+      orderId,
+      OrderStatus.cancelled,
+      cancellationReason: reason,
+      cancelledBy: cancelledBy,
+      cancelledAt: DateTime.now(),
+      refundStatus: refundStatus,
+      paymentStatus: paymentStatus,
+    );
     await restoreOrderStock(order);
     return true;
   }

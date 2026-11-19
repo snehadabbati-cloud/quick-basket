@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../../../core/constants/app_colors.dart';
 import '../../../models/banner_model.dart';
+import '../../../models/delivery_area_model.dart';
 import '../../../services/mock_data_service.dart';
 import '../../../services/supabase_service.dart';
 import '../../../shared_widgets/promo_banner_card.dart';
@@ -27,17 +28,14 @@ class AdminSettingsPage extends StatefulWidget {
 class _AdminSettingsPageState extends State<AdminSettingsPage> {
   String _tab = 'delivery';
 
-  final _storeName = TextEditingController(text: 'Quick Basket — Koramangala');
-  final _storeCode = TextEditingController(text: 'QB-BLR-KRM');
-  final _storePhone = TextEditingController(text: '+91 80 4000 1234');
-  final _storeHours = TextEditingController(text: '7:00 AM – 11:00 PM');
-  final _storeAddress = TextEditingController(text: '80 Feet Road, 4th Block, Koramangala, Bengaluru 560034');
+  final _storeName = TextEditingController(text: 'Quick Basket — Nizampet Dark Store');
+  final _storeCode = TextEditingController(text: 'QB-HYD-NZM-500090');
+  final _storePhone = TextEditingController(text: '+91 40 4000 5090');
+  final _storeHours = TextEditingController(text: '6:00 AM – 12:00 AM');
+  final _storeAddress =
+      TextEditingController(text: 'Plot 42, Road No 2, Nizampet & Pragathi Nagar, Hyderabad, Telangana 500090');
 
-  final List<Map<String, dynamic>> _areas = [
-    {'name': 'Koramangala', 'pin': '560034', 'min': 99, 'fee': 25, 'free': 199, 'eta': 12, 'live': true},
-    {'name': 'HSR Layout', 'pin': '560102', 'min': 99, 'fee': 25, 'free': 199, 'eta': 15, 'live': true},
-    {'name': 'BTM Layout', 'pin': '560076', 'min': 99, 'fee': 25, 'free': 199, 'eta': 18, 'live': true},
-  ];
+  List<DeliveryAreaModel> _deliveryAreas = [];
 
   late final List<Map<String, String>> _staff = [
     {
@@ -59,11 +57,17 @@ class _AdminSettingsPageState extends State<AdminSettingsPage> {
   void initState() {
     super.initState();
     _loadBanners();
+    _loadDeliveryAreas();
   }
 
   Future<void> _loadBanners() async {
     final b = await SupabaseService().getBanners();
     if (mounted) setState(() => _banners = b);
+  }
+
+  Future<void> _loadDeliveryAreas() async {
+    final areas = await SupabaseService().getDeliveryAreas(onlyActive: false);
+    if (mounted) setState(() => _deliveryAreas = areas);
   }
 
   @override
@@ -262,6 +266,9 @@ class _AdminSettingsPageState extends State<AdminSettingsPage> {
     final name = TextEditingController();
     final pin = TextEditingController();
     final eta = TextEditingController(text: '15');
+    final fee = TextEditingController(text: '25');
+    final minVal = TextEditingController(text: '99');
+    final freeVal = TextEditingController(text: '199');
     String? error;
     showDialog(
       context: context,
@@ -271,41 +278,61 @@ class _AdminSettingsPageState extends State<AdminSettingsPage> {
           title: const Text('Add delivery area', style: TextStyle(fontWeight: FontWeight.w800)),
           content: SizedBox(
             width: 380,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                TextField(controller: name, decoration: const InputDecoration(labelText: 'Area name')),
-                const SizedBox(height: 12),
-                TextField(controller: pin, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Pincode')),
-                const SizedBox(height: 12),
-                TextField(controller: eta, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'ETA (minutes)')),
-                if (error != null) ...[
-                  const SizedBox(height: 10),
-                  Text(error!, style: const TextStyle(color: AppColors.error, fontWeight: FontWeight.w700)),
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  TextField(controller: name, decoration: const InputDecoration(labelText: 'Area name (e.g. Miyapur)')),
+                  const SizedBox(height: 12),
+                  TextField(controller: pin, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Pincode (e.g. 500049)')),
+                  const SizedBox(height: 12),
+                  TextField(controller: eta, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'ETA (minutes)')),
+                  const SizedBox(height: 12),
+                  TextField(controller: fee, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Delivery fee (₹)')),
+                  const SizedBox(height: 12),
+                  TextField(controller: minVal, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Min order value (₹)')),
+                  const SizedBox(height: 12),
+                  TextField(controller: freeVal, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Free delivery above (₹)')),
+                  if (error != null) ...[
+                    const SizedBox(height: 10),
+                    Text(error!, style: const TextStyle(color: AppColors.error, fontWeight: FontWeight.w700)),
+                  ],
                 ],
-              ],
+              ),
             ),
           ),
           actions: [
             TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
             ElevatedButton(
-              onPressed: () {
+              onPressed: () async {
                 final etaVal = int.tryParse(eta.text.trim());
+                final feeVal = double.tryParse(fee.text.trim()) ?? 25.0;
+                final minOrderVal = double.tryParse(minVal.text.trim()) ?? 99.0;
+                final freeAboveVal = double.tryParse(freeVal.text.trim()) ?? 199.0;
                 if (name.text.trim().isEmpty || !RegExp(r'^\d{6}$').hasMatch(pin.text.trim()) || etaVal == null) {
                   setD(() => error = 'Enter an area name, a 6-digit pincode and an ETA');
                   return;
                 }
-                setState(() => _areas.add({
-                      'name': name.text.trim(),
-                      'pin': pin.text.trim(),
-                      'min': 99,
-                      'fee': 25,
-                      'free': 199,
-                      'eta': etaVal,
-                      'live': true,
-                    }));
-                Navigator.pop(ctx);
-                _snack('${name.text.trim()} added');
+                final newArea = DeliveryAreaModel(
+                  id: 'area-${pin.text.trim()}',
+                  storeId: 'qb-hub-500090',
+                  name: name.text.trim(),
+                  pincode: pin.text.trim(),
+                  city: 'Hyderabad',
+                  state: 'Telangana',
+                  minOrderValue: minOrderVal,
+                  deliveryFee: feeVal,
+                  freeDeliveryAbove: freeAboveVal,
+                  estimatedDeliveryMins: etaVal,
+                  latitude: 17.5186,
+                  longitude: 78.3845,
+                  radiusKm: 5.0,
+                  isActive: true,
+                );
+                await SupabaseService().updateDeliveryArea(newArea);
+                await _loadDeliveryAreas();
+                if (mounted) Navigator.pop(ctx);
+                _snack('${name.text.trim()} (${pin.text.trim()}) added to delivery areas');
               },
               child: const Text('Add area'),
             ),
@@ -328,8 +355,8 @@ class _AdminSettingsPageState extends State<AdminSettingsPage> {
               Padding(
                 padding: const EdgeInsets.fromLTRB(20, 16, 16, 14),
                 child: _sectionTitle(
-                  'Delivery areas',
-                  subtitle: 'Pincodes served by this store',
+                  'Delivery areas (Nizampet Hub - 500090, Telangana)',
+                  subtitle: '5.5 km Dark Store Radius · Unserviceable pincodes automatically blocked',
                   action: OutlinedButton(
                     onPressed: _addArea,
                     style: OutlinedButton.styleFrom(
@@ -345,20 +372,24 @@ class _AdminSettingsPageState extends State<AdminSettingsPage> {
                 columns: const ['Area', 'Pincode', 'Min order', 'Delivery fee', 'Free above', 'ETA', 'Live'],
                 flex: const [1.4, 0.9, 0.9, 0.9, 0.9, 0.7, 0.6],
                 minWidth: 700,
-                rows: _areas.map((a) {
+                rows: _deliveryAreas.map((a) {
                   return <Widget>[
-                    Text(a['name'] as String, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w800)),
-                    Text(a['pin'] as String, style: const TextStyle(fontSize: 13)),
-                    Text('₹${a['min']}', style: const TextStyle(fontSize: 13)),
-                    Text('₹${a['fee']}', style: const TextStyle(fontSize: 13)),
-                    Text('₹${a['free']}', style: const TextStyle(fontSize: 13)),
-                    Text('${a['eta']} min', style: const TextStyle(fontSize: 13)),
+                    Text(a.name, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w800)),
+                    Text(a.pincode, style: const TextStyle(fontSize: 13)),
+                    Text('₹${a.minOrderValue.toStringAsFixed(0)}', style: const TextStyle(fontSize: 13)),
+                    Text('₹${a.deliveryFee.toStringAsFixed(0)}', style: const TextStyle(fontSize: 13)),
+                    Text('₹${a.freeDeliveryAbove.toStringAsFixed(0)}', style: const TextStyle(fontSize: 13)),
+                    Text('${a.estimatedDeliveryMins} min', style: const TextStyle(fontSize: 13)),
                     Align(
                       alignment: Alignment.centerLeft,
                       child: AdminSwitch(
-                        value: a['live'] as bool,
+                        value: a.isActive,
                         semanticLabel: 'Area live',
-                        onChanged: (v) => setState(() => a['live'] = v),
+                        onChanged: (v) async {
+                          await SupabaseService().toggleDeliveryArea(a.id, v);
+                          await _loadDeliveryAreas();
+                          _snack('${a.name} (${a.pincode}) is now ${v ? "active" : "inactive"}');
+                        },
                       ),
                     ),
                   ];

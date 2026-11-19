@@ -18,6 +18,7 @@ import 'category_products_screen.dart';
 import 'search_screen.dart';
 import '../widgets/storefront_chrome.dart';
 import '../../../models/address_model.dart';
+import '../../../models/delivery_area_model.dart';
 import '../../../models/order_model.dart';
 import '../../cart/widgets/cart_item_tile.dart';
 import '../../cart/widgets/bill_details_card.dart';
@@ -56,18 +57,24 @@ class _HomeScreenState extends State<HomeScreen> {
 
   // Cart & Checkout State (PRD 4.8 & 4.9)
   static final AddressModel _defaultAddress = AddressModel(
-    id: 'default-home-1',
+    id: 'addr-500090-home',
     userId: 'guest-user',
     type: 'Home',
-    flatHouseNumber: 'Flat 402',
-    areaStreet: 'Sunshine Apartments, 12th Main',
-    landmark: 'Central Park',
-    city: 'Bengaluru',
-    pincode: '560001',
+    flatHouseNumber: 'Flat 301, Sri Sai Residency',
+    areaStreet: 'Road No. 1, Pragathi Nagar',
+    landmark: 'Near Pragathi Nagar Lake',
+    city: 'Hyderabad',
+    state: 'Telangana',
+    pincode: '500090',
+    latitude: 17.5186,
+    longitude: 78.3845,
     isDefault: true,
   );
   AddressModel? _selectedAddress;
   List<AddressModel> _savedAddresses = [];
+  ServiceabilityResult? _serviceabilityResult;
+  bool get _isAddressServiceable => _serviceabilityResult?.isServiceable ?? true;
+  int get _deliveryEtaMins => _serviceabilityResult?.estimatedMinutes ?? 11;
   final Set<String> _deliveryInstructions = {};
   double _tipAmount = 0.0;
   String? _appliedCoupon;
@@ -94,6 +101,7 @@ class _HomeScreenState extends State<HomeScreen> {
   void initState() {
     super.initState();
     _selectedAddress = _defaultAddress;
+    _evaluateServiceability();
     _loadData();
     _loadUserProfile();
     _loadUserOrders();
@@ -104,6 +112,7 @@ class _HomeScreenState extends State<HomeScreen> {
     SupabaseService().categoriesNotifier.addListener(_onCategoriesNotifierChanged);
     SupabaseService().hiddenProductIds.addListener(_onProductVisibilityChanged);
     SupabaseService().inventoryNotifier.addListener(_onInventoryChanged);
+    SupabaseService().serviceabilityNotifier.addListener(_onServiceabilityChanged);
 
     // Cross-tab sync timer: periodically polls shared storage for real-time updates
     _ordersSyncTimer = Timer.periodic(const Duration(milliseconds: 1000), (_) {
@@ -157,6 +166,25 @@ class _HomeScreenState extends State<HomeScreen> {
   void _onInventoryChanged() {
     if (mounted) {
       _loadData();
+    }
+  }
+
+  void _onServiceabilityChanged() {
+    if (mounted) {
+      _evaluateServiceability();
+    }
+  }
+
+  Future<void> _evaluateServiceability() async {
+    final addr = _selectedAddress ?? _defaultAddress;
+    final res = await SupabaseService().checkServiceability(
+      pincode: addr.pincode,
+      lat: addr.latitude,
+      lng: addr.longitude,
+      addressText: addr.formattedAddress,
+    );
+    if (mounted) {
+      setState(() => _serviceabilityResult = res);
     }
   }
 
@@ -219,7 +247,13 @@ class _HomeScreenState extends State<HomeScreen> {
     final userId = SupabaseService().currentUser?.id ?? 'guest-user';
     final addresses = await SupabaseService().getUserAddresses(userId);
     if (mounted) {
-      setState(() => _savedAddresses = addresses);
+      setState(() {
+        _savedAddresses = addresses;
+        if (_selectedAddress == null && addresses.isNotEmpty) {
+          _selectedAddress = addresses.first;
+        }
+      });
+      _evaluateServiceability();
     }
   }
 
@@ -285,6 +319,7 @@ class _HomeScreenState extends State<HomeScreen> {
     SupabaseService().categoriesNotifier.removeListener(_onCategoriesNotifierChanged);
     SupabaseService().hiddenProductIds.removeListener(_onProductVisibilityChanged);
     SupabaseService().inventoryNotifier.removeListener(_onInventoryChanged);
+    SupabaseService().serviceabilityNotifier.removeListener(_onServiceabilityChanged);
     _ordersSyncTimer?.cancel();
     _authSubscription?.cancel();
     _bannerTimer?.cancel();
@@ -430,15 +465,22 @@ class _HomeScreenState extends State<HomeScreen> {
 
   double get _itemMrpTotal => _cart.values.fold(0.0, (sum, item) => sum + (item.variant.mrp * item.quantity));
 
-  double get _deliveryFee => (_itemTotal >= 199 || _cart.isEmpty) ? 0.0 : 25.0;
+  double get _deliveryFee {
+    if (_cart.isEmpty) return 0.0;
+    final freeThreshold = _serviceabilityResult?.freeDeliveryAbove ?? 199.0;
+    if (_itemTotal >= freeThreshold) return 0.0;
+    return _serviceabilityResult?.deliveryFee ?? 25.0;
+  }
 
   double get _packagingFee => _cart.isEmpty ? 0.0 : 5.0;
 
   double get _grandTotal =>
       (_itemTotal + _deliveryFee + _packagingFee + _tipAmount - _couponDiscount).clamp(0.0, double.infinity);
 
-  double get _cartSavings =>
-      (_itemMrpTotal - _itemTotal) + _couponDiscount + (_deliveryFee == 0 && _cart.isNotEmpty ? 25 : 0);
+  double get _cartSavings {
+    final baseFee = _serviceabilityResult?.deliveryFee ?? 25.0;
+    return (_itemMrpTotal - _itemTotal) + _couponDiscount + (_deliveryFee == 0 && _cart.isNotEmpty ? baseFee : 0);
+  }
 
   void _applyCoupon() {
     final code = _couponController.text.trim().toUpperCase();
@@ -490,6 +532,7 @@ class _HomeScreenState extends State<HomeScreen> {
     );
     if (result != null) {
       setState(() => _selectedAddress = result);
+      await _evaluateServiceability();
       _loadSavedAddresses();
     }
   }
@@ -497,12 +540,14 @@ class _HomeScreenState extends State<HomeScreen> {
   void _useCurrentLocation() {
     // Device GPS is simulated in this build: resolve to the default home address.
     setState(() => _selectedAddress = _savedAddresses.isNotEmpty ? _savedAddresses.first : _defaultAddress);
+    _evaluateServiceability();
     _showCartSnackBar('Location updated: ${_selectedAddress!.areaStreet}');
   }
 
   void _openCheckout() {
     _selectedAddress ??= _defaultAddress;
     _loadSavedAddresses();
+    _evaluateServiceability();
     setState(() => _checkoutOpen = true);
   }
 
@@ -510,6 +555,17 @@ class _HomeScreenState extends State<HomeScreen> {
     final effectiveAddress = _selectedAddress ?? _defaultAddress;
     final user = SupabaseService().currentUser;
     final userId = user?.id ?? '00000000-0000-0000-0000-000000000000';
+
+    if (!_isAddressServiceable) {
+      _showCartSnackBar('Delivery unavailable at ${effectiveAddress.pincode}. Please select an address in our delivery zone.');
+      return;
+    }
+
+    final minOrder = _serviceabilityResult?.minOrderValue ?? 99.0;
+    if (_itemTotal < minOrder) {
+      _showCartSnackBar('Minimum order value for ${effectiveAddress.pincode} is ₹${minOrder.toStringAsFixed(0)}.');
+      return;
+    }
 
     setState(() => _isPlacingOrder = true);
 
@@ -981,6 +1037,8 @@ class _HomeScreenState extends State<HomeScreen> {
           MobileHomeHeader(
             addressLabel: _addressLabel,
             addressLine: _addressLine,
+            deliveryMinutes: _deliveryEtaMins,
+            isServiceable: _isAddressServiceable,
             onAddressTap: _selectDeliveryAddress,
             onProfileTap: () => _goToTab(4),
             onSearchTap: _openSearch,
@@ -1066,15 +1124,25 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Widget _buildFreeDeliveryStrip() {
-    final shortfall = 199 - _itemTotal;
+    final freeThreshold = _serviceabilityResult?.freeDeliveryAbove ?? 199.0;
+    final fee = _serviceabilityResult?.deliveryFee ?? 25.0;
+    final shortfall = freeThreshold - _itemTotal;
     final unlocked = _cart.isNotEmpty && shortfall <= 0;
+    final storeName = _serviceabilityResult?.matchedArea?.name ?? 'Nizampet Hub (500090)';
+
     return Container(
       margin: const EdgeInsets.symmetric(horizontal: 16),
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
       decoration: BoxDecoration(
-        color: unlocked ? AppColors.primaryLight : AppColors.accentLight,
+        color: !_isAddressServiceable
+            ? const Color(0xFFFEF2F2)
+            : (unlocked ? AppColors.primaryLight : AppColors.accentLight),
         borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: unlocked ? const Color(0xFFCFE3D6) : AppColors.accentBorder),
+        border: Border.all(
+          color: !_isAddressServiceable
+              ? const Color(0xFFFECACA)
+              : (unlocked ? const Color(0xFFCFE3D6) : AppColors.accentBorder),
+        ),
       ),
       child: Row(
         children: [
@@ -1082,12 +1150,16 @@ class _HomeScreenState extends State<HomeScreen> {
             width: 36,
             height: 36,
             decoration: BoxDecoration(
-              color: unlocked ? AppColors.primary : AppColors.accent,
+              color: !_isAddressServiceable
+                  ? const Color(0xFFDC2626)
+                  : (unlocked ? AppColors.primary : AppColors.accent),
               borderRadius: BorderRadius.circular(10),
             ),
             child: Icon(
-              unlocked ? Icons.check_rounded : Icons.local_shipping_outlined,
-              color: unlocked ? Colors.white : AppColors.textPrimary,
+              !_isAddressServiceable
+                  ? Icons.location_off_rounded
+                  : (unlocked ? Icons.check_rounded : Icons.local_shipping_outlined),
+              color: (!_isAddressServiceable || unlocked) ? Colors.white : AppColors.textPrimary,
               size: 20,
             ),
           ),
@@ -1097,15 +1169,30 @@ class _HomeScreenState extends State<HomeScreen> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  unlocked ? 'You unlocked FREE delivery!' : 'Free delivery on orders above ₹199',
-                  style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700),
+                  !_isAddressServiceable
+                      ? (_serviceabilityResult?.statusHeadline ?? 'Delivery currently unavailable')
+                      : (unlocked
+                          ? 'You unlocked FREE delivery!'
+                          : 'Free delivery on orders above ₹${freeThreshold.toStringAsFixed(0)}'),
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w700,
+                    color: !_isAddressServiceable ? const Color(0xFF991B1B) : null,
+                  ),
                 ),
                 const SizedBox(height: 2),
                 Text(
-                  _cart.isEmpty || unlocked
-                      ? '₹25 delivery fee below · Koramangala store'
-                      : 'Add ₹${shortfall.toStringAsFixed(0)} more to save the ₹25 fee',
-                  style: TextStyle(fontSize: 12, color: unlocked ? AppColors.primaryDeep : const Color(0xFF5B5133)),
+                  !_isAddressServiceable
+                      ? (_serviceabilityResult?.statusMessage ?? 'We are expanding to this pincode soon!')
+                      : (_cart.isEmpty || unlocked
+                          ? '₹${fee.toStringAsFixed(0)} delivery fee below · $storeName'
+                          : 'Add ₹${shortfall.toStringAsFixed(0)} more to save the ₹${fee.toStringAsFixed(0)} fee'),
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: !_isAddressServiceable
+                        ? const Color(0xFFB91C1C)
+                        : (unlocked ? AppColors.primaryDeep : const Color(0xFF5B5133)),
+                  ),
                 ),
               ],
             ),
@@ -1390,7 +1477,15 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Widget _buildCartItemsCard() {
-    final freeShortfall = 199 - _itemTotal;
+    final freeThreshold = _serviceabilityResult?.freeDeliveryAbove ?? 199.0;
+    final freeShortfall = freeThreshold - _itemTotal;
+    final etaText = _isAddressServiceable ? 'Delivery in $_deliveryEtaMins minutes' : 'Delivery Not Available';
+    final subText = !_isAddressServiceable
+        ? (_serviceabilityResult?.statusHeadline ?? 'Location outside delivery area')
+        : (freeShortfall > 0
+            ? 'Shipment of $_totalCartItems items · add ₹${freeShortfall.toStringAsFixed(0)} for free delivery'
+            : 'Shipment of $_totalCartItems items · free delivery unlocked');
+
     return Container(
       decoration: qbCard(),
       clipBehavior: Clip.antiAlias,
@@ -1405,20 +1500,34 @@ class _HomeScreenState extends State<HomeScreen> {
                 Container(
                   width: 40,
                   height: 40,
-                  decoration: BoxDecoration(color: AppColors.primaryLight, borderRadius: BorderRadius.circular(12)),
-                  child: const Icon(Icons.bolt_rounded, color: AppColors.primary),
+                  decoration: BoxDecoration(
+                    color: _isAddressServiceable ? AppColors.primaryLight : const Color(0xFFFEE2E2),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Icon(
+                    _isAddressServiceable ? Icons.bolt_rounded : Icons.location_off_rounded,
+                    color: _isAddressServiceable ? AppColors.primary : const Color(0xFFDC2626),
+                  ),
                 ),
                 const SizedBox(width: 10),
                 Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      const Text('Delivery in 12 minutes', style: TextStyle(fontSize: 15, fontWeight: FontWeight.w800)),
                       Text(
-                        freeShortfall > 0
-                            ? 'Shipment of $_totalCartItems items · add ₹${freeShortfall.toStringAsFixed(0)} for free delivery'
-                            : 'Shipment of $_totalCartItems items · free delivery unlocked',
-                        style: const TextStyle(fontSize: 12, color: AppColors.textSecondary),
+                        etaText,
+                        style: TextStyle(
+                          fontSize: 15,
+                          fontWeight: FontWeight.w800,
+                          color: _isAddressServiceable ? null : const Color(0xFF991B1B),
+                        ),
+                      ),
+                      Text(
+                        subText,
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: _isAddressServiceable ? AppColors.textSecondary : const Color(0xFFDC2626),
+                        ),
                       ),
                     ],
                   ),
@@ -1551,6 +1660,9 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Widget _buildCartStickyFooter() {
+    final minOrder = _serviceabilityResult?.minOrderValue ?? 99.0;
+    final isBelowMinOrder = _itemTotal < minOrder;
+
     return Container(
       padding: const EdgeInsets.fromLTRB(16, 12, 16, 14),
       decoration: BoxDecoration(
@@ -1563,14 +1675,68 @@ class _HomeScreenState extends State<HomeScreen> {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
+          if (!_isAddressServiceable)
+            Container(
+              margin: const EdgeInsets.only(bottom: 10),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              decoration: BoxDecoration(
+                color: const Color(0xFFFEF2F2),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: const Color(0xFFFECACA)),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.location_off_rounded, color: Color(0xFFDC2626), size: 18),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      _serviceabilityResult?.statusMessage ?? 'Quick Basket does not deliver to this pincode yet.',
+                      style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: Color(0xFF991B1B)),
+                    ),
+                  ),
+                ],
+              ),
+            )
+          else if (isBelowMinOrder)
+            Container(
+              margin: const EdgeInsets.only(bottom: 10),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              decoration: BoxDecoration(
+                color: const Color(0xFFFFFBEB),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: const Color(0xFFFDE68A)),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.info_outline_rounded, color: Color(0xFFD97706), size: 18),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'Minimum order value for this zone is ₹${minOrder.toStringAsFixed(0)}. Add ₹${(minOrder - _itemTotal).toStringAsFixed(0)} more to proceed.',
+                      style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: Color(0xFF92400E)),
+                    ),
+                  ),
+                ],
+              ),
+            ),
           Row(
             children: [
-              const Icon(Icons.location_on_outlined, color: AppColors.primary, size: 20),
+              Icon(
+                _isAddressServiceable ? Icons.location_on_outlined : Icons.location_off_outlined,
+                color: _isAddressServiceable ? AppColors.primary : const Color(0xFFDC2626),
+                size: 20,
+              ),
               const SizedBox(width: 8),
               Expanded(
                 child: Text.rich(
                   TextSpan(children: [
-                    TextSpan(text: _addressLabel, style: const TextStyle(fontWeight: FontWeight.w800)),
+                    TextSpan(
+                      text: _addressLabel,
+                      style: TextStyle(
+                        fontWeight: FontWeight.w800,
+                        color: _isAddressServiceable ? AppColors.textPrimary : const Color(0xFFDC2626),
+                      ),
+                    ),
                     TextSpan(text: ' · $_addressLine'),
                   ]),
                   maxLines: 1,
@@ -1587,8 +1753,10 @@ class _HomeScreenState extends State<HomeScreen> {
           const SizedBox(height: 6),
           _greenTotalButton(
             total: _grandTotal,
-            label: 'Proceed to pay',
-            onPressed: _openCheckout,
+            label: !_isAddressServiceable
+                ? 'Delivery Unavailable'
+                : (isBelowMinOrder ? 'Min order ₹${minOrder.toStringAsFixed(0)}' : 'Proceed to pay'),
+            onPressed: (!_isAddressServiceable || isBelowMinOrder) ? null : _openCheckout,
           ),
         ],
       ),
@@ -1702,9 +1870,14 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Widget _addressCard(AddressModel a, {bool tall = false}) {
     final on = _selectedAddress?.id == a.id;
+    final isAreaDeliverable = DarkStoreConfig.isPincodeDeliverable(a.pincode);
+
     return _selectableCard(
       selected: on,
-      onTap: () => setState(() => _selectedAddress = a),
+      onTap: () {
+        setState(() => _selectedAddress = a);
+        _evaluateServiceability();
+      },
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -1712,10 +1885,16 @@ class _HomeScreenState extends State<HomeScreen> {
             width: 38,
             height: 38,
             decoration: BoxDecoration(
-              color: on ? const Color(0xFFD4EEDC) : AppColors.surfaceMuted,
+              color: on
+                  ? (isAreaDeliverable ? const Color(0xFFD4EEDC) : const Color(0xFFFEE2E2))
+                  : AppColors.surfaceMuted,
               borderRadius: BorderRadius.circular(12),
             ),
-            child: Icon(_addressIcon(a.type), color: AppColors.primary, size: 20),
+            child: Icon(
+              isAreaDeliverable ? _addressIcon(a.type) : Icons.location_off_outlined,
+              color: isAreaDeliverable ? AppColors.primary : const Color(0xFFDC2626),
+              size: 20,
+            ),
           ),
           const SizedBox(width: 12),
           Expanded(
@@ -1735,6 +1914,23 @@ class _HomeScreenState extends State<HomeScreen> {
                         padding: EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                       ),
                     ],
+                    const SizedBox(width: 6),
+                    if (isAreaDeliverable)
+                      QbPill(
+                        label: '${DarkStoreConfig.getEstimatedMinutesForPincode(a.pincode)} MINS',
+                        background: AppColors.primaryLight,
+                        foreground: AppColors.primaryDeep,
+                        fontSize: 9,
+                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                      )
+                    else
+                      const QbPill(
+                        label: 'OUT OF ZONE',
+                        background: Color(0xFFFEE2E2),
+                        foreground: Color(0xFFDC2626),
+                        fontSize: 9,
+                        padding: EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                      ),
                   ],
                 ),
                 const SizedBox(height: 3),
@@ -1911,6 +2107,34 @@ class _HomeScreenState extends State<HomeScreen> {
           textStyle: const TextStyle(fontSize: 15, fontWeight: FontWeight.w800),
         ),
         child: const Text('Items Out of Stock · Cannot Checkout', style: TextStyle(color: AppColors.error)),
+      );
+    }
+
+    if (!_isAddressServiceable) {
+      return ElevatedButton(
+        onPressed: null,
+        style: ElevatedButton.styleFrom(
+          disabledBackgroundColor: const Color(0xFFFEE2E2),
+          minimumSize: const Size.fromHeight(56),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+          textStyle: const TextStyle(fontSize: 14, fontWeight: FontWeight.w800),
+        ),
+        child: const Text('Unserviceable Location · Change Address', style: TextStyle(color: Color(0xFFDC2626))),
+      );
+    }
+
+    final minOrder = _serviceabilityResult?.minOrderValue ?? 99.0;
+    if (_itemTotal < minOrder) {
+      return ElevatedButton(
+        onPressed: null,
+        style: ElevatedButton.styleFrom(
+          disabledBackgroundColor: const Color(0xFFFEF3C7),
+          minimumSize: const Size.fromHeight(56),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+          textStyle: const TextStyle(fontSize: 14, fontWeight: FontWeight.w800),
+        ),
+        child: Text('Min order is ₹${minOrder.toStringAsFixed(0)} · Add more',
+            style: const TextStyle(color: Color(0xFFD97706))),
       );
     }
 
@@ -2336,6 +2560,8 @@ class _HomeScreenState extends State<HomeScreen> {
         children: [
           DesktopShopHeader(
             addressLine: '$_addressLabel · $_addressLine',
+            deliveryMinutes: _deliveryEtaMins,
+            isServiceable: _isAddressServiceable,
             onAddressTap: _selectDeliveryAddress,
             onSearchTap: _openSearch,
             onLogoTap: () => _goToTab(0),
@@ -2714,10 +2940,10 @@ class _HomeScreenState extends State<HomeScreen> {
             children: [
               const Expanded(child: Text('Your cart', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800))),
               QbPill(
-                label: '12 mins',
-                icon: Icons.bolt_rounded,
-                background: AppColors.primaryLight,
-                foreground: AppColors.primaryDeep,
+                label: _isAddressServiceable ? '$_deliveryEtaMins mins' : 'Out of Zone',
+                icon: _isAddressServiceable ? Icons.bolt_rounded : Icons.location_off_rounded,
+                background: _isAddressServiceable ? AppColors.primaryLight : const Color(0xFFFEE2E2),
+                foreground: _isAddressServiceable ? AppColors.primaryDeep : const Color(0xFFDC2626),
                 fontSize: 12,
               ),
             ],

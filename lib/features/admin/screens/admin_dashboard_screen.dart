@@ -59,8 +59,8 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
     _fetchOrders();
     // 1. Subscribe to reactive order events (instant local updates)
     SupabaseService().ordersNotifier.addListener(_onOrdersNotifierChanged);
-    // 2. Fallback polling for remote database syncing
-    _pollingTimer = Timer.periodic(const Duration(seconds: 10), (_) => _fetchOrders(silent: true));
+    // 2. Fallback polling for remote database syncing (1s for instant cross-tab order state)
+    _pollingTimer = Timer.periodic(const Duration(milliseconds: 1000), (_) => _fetchOrders(silent: true));
   }
 
   @override
@@ -119,9 +119,30 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
   // Order pipeline
   // ---------------------------------------------------------------------------
 
-  Future<void> _setStatus(OrderModel order, OrderStatus to) async {
+  Future<void> _setStatus(
+    OrderModel order,
+    OrderStatus to, {
+    String? reason,
+    String? cancelledBy,
+  }) async {
     final from = order.status;
-    await SupabaseService().updateOrderStatus(order.id, to);
+    final isCancel = to == OrderStatus.cancelled;
+    final by = isCancel ? (cancelledBy ?? 'store') : null;
+    final cancelReason = isCancel ? (reason ?? 'Cancelled by store') : null;
+    final refundStatus = isCancel ? (order.isCod ? 'none' : 'initiated') : null;
+    final paymentStatus = isCancel ? (order.isCod ? 'pending' : 'refunded') : null;
+
+    await SupabaseService().updateOrderStatus(
+      order.id,
+      to,
+      cancellationReason: cancelReason,
+      cancelledBy: by,
+      refundStatus: refundStatus,
+      paymentStatus: paymentStatus,
+    );
+    if (to == OrderStatus.cancelled) {
+      await SupabaseService().restoreOrderStock(order);
+    }
     if (!mounted) return;
     setState(() {
       _lastAction = AdminOrderAction(
@@ -145,7 +166,12 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
     await _setStatus(order, next);
   }
 
-  Future<void> _rejectOrder(OrderModel order) => _setStatus(order, OrderStatus.cancelled);
+  Future<void> _rejectOrder(OrderModel order) => _setStatus(
+    order,
+    OrderStatus.cancelled,
+    reason: 'Cancelled by store',
+    cancelledBy: 'store',
+  );
 
   Future<void> _undoLastAction() async {
     final action = _lastAction;
@@ -335,7 +361,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(name, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700)),
-                const Text('Koramangala', style: TextStyle(fontSize: 11, color: AppColors.textSecondary)),
+                const Text('Nizampet, 500090 (Telangana)', style: TextStyle(fontSize: 11, color: AppColors.textSecondary)),
               ],
             ),
           ],
