@@ -647,4 +647,124 @@ void main() {
     await tester.pumpWidget(const SizedBox());
     await tester.pump();
   });
+
+  testWidgets('COD Order Cancellation: Displays "No payment was collected for this order" without refund mentions', (WidgetTester tester) async {
+    useSize(tester, const Size(400, 850));
+
+    final codCancelledOrder = OrderModel(
+      id: 'test-cod-cancel',
+      orderNumber: '#QB-040581',
+      userId: 'test-user-cod',
+      items: [],
+      itemTotal: 220.0,
+      grandTotal: 220.0,
+      paymentMethod: 'cod',
+      paymentStatus: 'pending',
+      status: OrderStatus.cancelled,
+      cancelledBy: 'customer',
+      cancellationReason: 'Cancelled by customer',
+      refundStatus: 'none',
+      createdAt: DateTime.now(),
+    );
+
+    await tester.pumpWidget(MaterialApp(home: OrderTrackingScreen(order: codCancelledOrder)));
+    await tester.pumpAndSettle();
+
+    // Verify "No payment was collected for this order." is displayed in both banner and status
+    expect(find.textContaining('No payment was collected for this order.'), findsWidgets);
+
+    // Verify NO refund is mentioned
+    expect(find.textContaining('Full refund of'), findsNothing);
+    expect(find.textContaining('A full refund'), findsNothing);
+    expect(find.textContaining('refund has been'), findsNothing);
+    expect(find.textContaining('refund will be'), findsNothing);
+
+    await tester.pumpWidget(const SizedBox());
+    await tester.pump();
+  });
+
+  testWidgets('Online Payment Cancellation: Displays exact status ("initiated", "processed", "pending")', (WidgetTester tester) async {
+    useSize(tester, const Size(400, 850));
+
+    // 1. Initiated
+    final onlineInitiatedOrder = OrderModel(
+      id: 'test-online-initiated',
+      orderNumber: '#QB-112233',
+      userId: 'test-user-online',
+      items: [],
+      itemTotal: 350.0,
+      grandTotal: 350.0,
+      paymentMethod: 'upi',
+      paymentStatus: 'refunded',
+      status: OrderStatus.cancelled,
+      cancelledBy: 'customer',
+      cancellationReason: 'Cancelled by customer',
+      refundStatus: 'initiated',
+      createdAt: DateTime.now(),
+    );
+
+    await tester.pumpWidget(MaterialApp(home: OrderTrackingScreen(order: onlineInitiatedOrder)));
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining('Your refund has been initiated.'), findsWidgets);
+
+    // 2. Processed
+    final onlineProcessedOrder = onlineInitiatedOrder.copyWith(id: 'test-online-processed', refundStatus: 'processed');
+    await tester.pumpWidget(MaterialApp(home: OrderTrackingScreen(key: const ValueKey('processed'), order: onlineProcessedOrder)));
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining('Your refund has been successfully processed.'), findsWidgets);
+
+    // 3. Pending
+    final onlinePendingOrder = onlineInitiatedOrder.copyWith(id: 'test-online-pending', refundStatus: 'pending');
+    await tester.pumpWidget(MaterialApp(home: OrderTrackingScreen(key: const ValueKey('pending'), order: onlinePendingOrder)));
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining('Your refund is being processed.'), findsWidgets);
+
+    await tester.pumpWidget(const SizedBox());
+    await tester.pump();
+  });
+
+  test('OrderModel serialization maintains all cancellation and refund fields for Supabase', () {
+    final order = OrderModel(
+      id: 'db-order-uuid-1',
+      orderNumber: '#QB-998877',
+      userId: 'user-uuid-1',
+      storeId: '11111111-1111-1111-1111-111111111111',
+      items: [],
+      itemTotal: 100.0,
+      grandTotal: 105.0,
+      paymentMethod: 'cod',
+      paymentStatus: 'pending',
+      status: OrderStatus.cancelled,
+      cancelledBy: 'customer',
+      cancellationReason: 'Accidental order',
+      cancelledAt: DateTime(2026, 11, 19, 10, 0, 0),
+      refundStatus: 'none',
+    );
+
+    final json = order.toJson();
+    expect(json['cancelled_by'], 'customer');
+    expect(json['cancellation_reason'], 'Accidental order');
+    expect(json['cancelled_at'], isNotNull);
+    expect(json['refund_status'], 'none');
+    expect(json['order_status'], 'cancelled');
+
+    final parsed = OrderModel.fromJson(json);
+    expect(parsed.cancelledBy, 'customer');
+    expect(parsed.cancellationReason, 'Accidental order');
+    expect(parsed.refundStatus, 'none');
+    expect(parsed.status, OrderStatus.cancelled);
+    expect(parsed.isCod, isTrue);
+    expect(parsed.refundStatusMessage, 'No payment was collected for this order.');
+
+    // Status enum aliases check
+    expect(OrderStatusExtension.fromString('pending'), OrderStatus.placed);
+    expect(OrderStatusExtension.fromString('accepted'), OrderStatus.confirmed);
+    expect(OrderStatusExtension.fromString('preparing'), OrderStatus.packing);
+    expect(OrderStatusExtension.fromString('out_for_delivery'), OrderStatus.outForDelivery);
+    expect(OrderStatusExtension.fromString('delivered'), OrderStatus.delivered);
+    expect(OrderStatusExtension.fromString('cancelled'), OrderStatus.cancelled);
+  });
 }

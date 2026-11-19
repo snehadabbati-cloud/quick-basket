@@ -119,9 +119,27 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
   // Order pipeline
   // ---------------------------------------------------------------------------
 
-  Future<void> _setStatus(OrderModel order, OrderStatus to, {String? reason}) async {
+  Future<void> _setStatus(
+    OrderModel order,
+    OrderStatus to, {
+    String? reason,
+    String? cancelledBy,
+  }) async {
     final from = order.status;
-    await SupabaseService().updateOrderStatus(order.id, to, cancellationReason: reason);
+    final isCancel = to == OrderStatus.cancelled;
+    final by = isCancel ? (cancelledBy ?? 'store') : null;
+    final cancelReason = isCancel ? (reason ?? 'Cancelled by store') : null;
+    final refundStatus = isCancel ? (order.isCod ? 'none' : 'initiated') : null;
+    final paymentStatus = isCancel ? (order.isCod ? 'pending' : 'refunded') : null;
+
+    await SupabaseService().updateOrderStatus(
+      order.id,
+      to,
+      cancellationReason: cancelReason,
+      cancelledBy: by,
+      refundStatus: refundStatus,
+      paymentStatus: paymentStatus,
+    );
     if (to == OrderStatus.cancelled) {
       await SupabaseService().restoreOrderStock(order);
     }
@@ -148,7 +166,12 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
     await _setStatus(order, next);
   }
 
-  Future<void> _rejectOrder(OrderModel order) => _setStatus(order, OrderStatus.cancelled, reason: 'Cancelled by store');
+  Future<void> _rejectOrder(OrderModel order) => _setStatus(
+    order,
+    OrderStatus.cancelled,
+    reason: 'Cancelled by store',
+    cancelledBy: 'store',
+  );
 
   Future<void> _undoLastAction() async {
     final action = _lastAction;

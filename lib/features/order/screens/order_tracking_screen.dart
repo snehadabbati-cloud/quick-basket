@@ -122,7 +122,10 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen> {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.order.id != widget.order.id ||
         oldWidget.order.status != widget.order.status ||
-        oldWidget.order.cancellationReason != widget.order.cancellationReason) {
+        oldWidget.order.cancellationReason != widget.order.cancellationReason ||
+        oldWidget.order.cancelledBy != widget.order.cancelledBy ||
+        oldWidget.order.refundStatus != widget.order.refundStatus ||
+        oldWidget.order.paymentStatus != widget.order.paymentStatus) {
       setState(() {
         _activeOrder = widget.order;
         _currentStatus = widget.order.status;
@@ -155,15 +158,21 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen> {
 
   bool get _canCancelOrder => _cancellationSecondsLeft > 0;
 
+  bool get _isCancelledByStore =>
+      _activeOrder.cancelledBy == 'store' ||
+      _activeOrder.cancellationReason == 'Cancelled by store';
+
   Future<void> _confirmCancelOrder() async {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
         title: const Text('Cancel Order?', style: TextStyle(fontWeight: FontWeight.w800)),
-        content: const Text(
-          'Are you sure you want to cancel this order? Items will be refunded and restocked immediately.',
-          style: TextStyle(fontSize: 14, height: 1.4),
+        content: Text(
+          _activeOrder.isCod
+              ? 'Are you sure you want to cancel this order? No payment was collected for this order. Items will be restocked immediately.'
+              : 'Are you sure you want to cancel this order? Your refund will be initiated and items will be restocked immediately.',
+          style: const TextStyle(fontSize: 14, height: 1.4),
         ),
         actions: [
           TextButton(
@@ -180,19 +189,34 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen> {
     );
 
     if (confirmed == true && mounted) {
-      final success = await SupabaseService().cancelOrder(_activeOrder.id, reason: 'Cancelled by customer');
+      final success = await SupabaseService().cancelOrder(
+        _activeOrder.id,
+        reason: 'Cancelled by customer',
+        cancelledBy: 'customer',
+      );
       if (success && mounted) {
+        final isCod = _activeOrder.isCod;
+        final refundStatus = isCod ? 'none' : 'initiated';
+        final paymentStatus = isCod ? 'pending' : 'refunded';
         setState(() {
           _currentStatus = OrderStatus.cancelled;
           _activeOrder = _activeOrder.copyWith(
             status: OrderStatus.cancelled,
+            cancelledBy: 'customer',
             cancellationReason: 'Cancelled by customer',
+            cancelledAt: DateTime.now(),
+            refundStatus: refundStatus,
+            paymentStatus: paymentStatus,
           );
           _remainingSeconds = 0;
         });
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Order $_orderNumber cancelled. Items restored to stock.'),
+            content: Text(
+              isCod
+                  ? 'Order $_orderNumber cancelled. No payment was collected.'
+                  : 'Order $_orderNumber cancelled. Your refund has been initiated.',
+            ),
             behavior: SnackBarBehavior.floating,
           ),
         );
@@ -345,7 +369,7 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen> {
                           children: [
                             Text(
                               _isCancelled
-                                  ? (_activeOrder.cancellationReason == 'Cancelled by store'
+                                  ? (_isCancelledByStore
                                       ? 'Cancelled by Store'
                                       : 'Cancelled by You')
                                   : _currentStatus.displayName,
@@ -426,9 +450,17 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen> {
                                 const SizedBox(width: 10),
                                 Expanded(
                                   child: Text(
-                                    _activeOrder.cancellationReason == 'Cancelled by store'
-                                        ? 'Order was cancelled by store. All items returned to store stock.'
-                                        : 'You cancelled this order. Full refund of ₹${_activeOrder.grandTotal.toStringAsFixed(0)} initiated. All items returned to stock.',
+                                    _isCancelledByStore
+                                        ? (_activeOrder.isCod
+                                            ? 'Order was cancelled by store. No payment was collected for this order. All items returned to store stock.'
+                                            : (_activeOrder.refundStatusMessage.isNotEmpty
+                                                ? 'Order was cancelled by store. ${_activeOrder.refundStatusMessage} All items returned to store stock.'
+                                                : 'Order was cancelled by store. All items returned to store stock.'))
+                                        : (_activeOrder.isCod
+                                            ? 'You cancelled this order. No payment was collected for this order. All items returned to stock.'
+                                            : (_activeOrder.refundStatusMessage.isNotEmpty
+                                                ? 'You cancelled this order. ${_activeOrder.refundStatusMessage} All items returned to stock.'
+                                                : 'You cancelled this order. All items returned to stock.')),
                                     style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: Color(0xFFC62828)),
                                   ),
                                 ),
@@ -568,7 +600,7 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen> {
           const SizedBox(height: 12),
           if (_isCancelled) ...[
             QbPill(
-              label: _activeOrder.cancellationReason == 'Cancelled by store'
+              label: _isCancelledByStore
                   ? 'This order was cancelled by the store'
                   : 'This order was cancelled by you',
               icon: Icons.cancel_outlined,
@@ -578,9 +610,17 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen> {
             ),
             const SizedBox(height: 10),
             Text(
-              _activeOrder.cancellationReason == 'Cancelled by store'
-                  ? 'The store had to cancel this order. A full refund of ₹${_activeOrder.grandTotal.toStringAsFixed(0)} has been processed to your payment method.'
-                  : 'You cancelled this order within the cancellation window. A full refund of ₹${_activeOrder.grandTotal.toStringAsFixed(0)} has been processed to your payment method.',
+              _isCancelledByStore
+                  ? (_activeOrder.isCod
+                      ? 'The store had to cancel this order. No payment was collected for this order.'
+                      : (_activeOrder.refundStatusMessage.isNotEmpty
+                          ? 'The store had to cancel this order. ${_activeOrder.refundStatusMessage}'
+                          : 'The store had to cancel this order.'))
+                  : (_activeOrder.isCod
+                      ? 'You cancelled this order within the cancellation window. No payment was collected for this order.'
+                      : (_activeOrder.refundStatusMessage.isNotEmpty
+                          ? 'You cancelled this order within the cancellation window. ${_activeOrder.refundStatusMessage}'
+                          : 'You cancelled this order within the cancellation window.')),
               style: const TextStyle(fontSize: 12, color: AppColors.textSecondary, height: 1.45),
             ),
           ]
@@ -779,7 +819,7 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen> {
                                     crossAxisAlignment: CrossAxisAlignment.start,
                                     children: [
                                       Text(
-                                        'Order $_orderNumber · ${_isCancelled ? (_activeOrder.cancellationReason == 'Cancelled by store' ? 'Cancelled by Store' : 'Cancelled by You') : _currentStatus.displayName}',
+                                        'Order $_orderNumber · ${_isCancelled ? (_isCancelledByStore ? 'Cancelled by Store' : 'Cancelled by You') : _currentStatus.displayName}',
                                         style: TextStyle(color: Colors.white.withValues(alpha: 0.9), fontSize: 14, fontWeight: FontWeight.w600),
                                       ),
                                       const SizedBox(height: 6),
@@ -887,9 +927,17 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen> {
                                             const SizedBox(width: 10),
                                             Expanded(
                                               child: Text(
-                                                _activeOrder.cancellationReason == 'Cancelled by store'
-                                                    ? 'Order was cancelled by store. All items returned to store stock.'
-                                                    : 'You cancelled this order. Full refund of ₹${_activeOrder.grandTotal.toStringAsFixed(0)} initiated. All items returned to stock.',
+                                                _isCancelledByStore
+                                                    ? (_activeOrder.isCod
+                                                        ? 'Order was cancelled by store. No payment was collected for this order. All items returned to store stock.'
+                                                        : (_activeOrder.refundStatusMessage.isNotEmpty
+                                                            ? 'Order was cancelled by store. ${_activeOrder.refundStatusMessage} All items returned to store stock.'
+                                                            : 'Order was cancelled by store. All items returned to store stock.'))
+                                                    : (_activeOrder.isCod
+                                                        ? 'You cancelled this order. No payment was collected for this order. All items returned to stock.'
+                                                        : (_activeOrder.refundStatusMessage.isNotEmpty
+                                                            ? 'You cancelled this order. ${_activeOrder.refundStatusMessage} All items returned to stock.'
+                                                            : 'You cancelled this order. All items returned to stock.')),
                                                 style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: Color(0xFFC62828)),
                                               ),
                                             ),

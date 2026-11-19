@@ -401,7 +401,7 @@ class _AdminOverviewPageState extends State<AdminOverviewPage> {
               Color bg = st.background;
               Color fg = st.foreground;
               if (isCancelled) {
-                statusLabel = o.cancellationReason == 'Cancelled by store'
+                statusLabel = (o.cancelledBy == 'store' || o.cancellationReason == 'Cancelled by store')
                     ? 'Cancelled (Store)'
                     : 'Cancelled (Customer)';
                 bg = AppColors.errorLight;

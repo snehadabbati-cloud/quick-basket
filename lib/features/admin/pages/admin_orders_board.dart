@@ -212,7 +212,7 @@ class _AdminOrdersBoardState extends State<AdminOrdersBoard> {
                               Text(
                                 ok
                                     ? 'DELIVERED'
-                                    : (o.cancellationReason == 'Cancelled by store'
+                                    : ((o.cancelledBy == 'store' || o.cancellationReason == 'Cancelled by store')
                                         ? 'CANCELLED (STORE)'
                                         : 'CANCELLED (CUSTOMER)'),
                                 style: TextStyle(fontSize: 11, fontWeight: FontWeight.w800, color: ink),

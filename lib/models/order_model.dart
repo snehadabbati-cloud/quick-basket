@@ -46,14 +46,21 @@ extension OrderStatusExtension on OrderStatus {
   }
 
   static OrderStatus fromString(String val) {
-    switch (val.toLowerCase()) {
+    switch (val.toLowerCase().trim()) {
       case 'placed':
+      case 'pending':
         return OrderStatus.placed;
       case 'confirmed':
+      case 'accepted':
         return OrderStatus.confirmed;
       case 'packing':
+      case 'preparing':
+      case 'picking_started':
+      case 'packed':
         return OrderStatus.packing;
       case 'out_for_delivery':
+      case 'outfordelivery':
+      case 'partner_assigned':
         return OrderStatus.outForDelivery;
       case 'delivered':
         return OrderStatus.delivered;
@@ -79,11 +86,14 @@ class OrderModel {
   final double tipAmount;
   final double grandTotal;
   final String paymentMethod; // 'cod', 'upi'
-  final String paymentStatus; // 'pending', 'completed'
+  final String paymentStatus; // 'pending', 'captured', 'refunded', 'completed'
   final OrderStatus status;
   final String deliveryOtp;
   final String? deliveryInstructions;
+  final String? cancelledBy; // 'customer' or 'store'
   final String? cancellationReason;
+  final DateTime? cancelledAt;
+  final String? refundStatus; // 'none', 'pending', 'initiated', 'processed'
   final DateTime createdAt;
   final int estimatedDeliveryMinutes;
 
@@ -105,10 +115,33 @@ class OrderModel {
     this.status = OrderStatus.placed,
     this.deliveryOtp = '4921',
     this.deliveryInstructions,
+    this.cancelledBy,
     this.cancellationReason,
+    this.cancelledAt,
+    this.refundStatus,
     DateTime? createdAt,
     this.estimatedDeliveryMinutes = 12,
   }) : createdAt = createdAt ?? DateTime.now();
+
+  bool get isCod => paymentMethod.toLowerCase() == 'cod';
+  bool get isPaidOnline => !isCod;
+
+  /// Returns the exact user-facing refund message per PRD & user rules
+  String get refundStatusMessage {
+    if (isCod) {
+      return 'No payment was collected for this order.';
+    }
+    switch ((refundStatus ?? '').toLowerCase().trim()) {
+      case 'initiated':
+        return 'Your refund has been initiated.';
+      case 'processed':
+        return 'Your refund has been successfully processed.';
+      case 'pending':
+        return 'Your refund is being processed.';
+      default:
+        return '';
+    }
+  }
 
   factory OrderModel.fromJson(Map<String, dynamic> json, {List<CartItemModel> items = const [], AddressModel? address}) {
     return OrderModel(
@@ -128,7 +161,10 @@ class OrderModel {
       status: OrderStatusExtension.fromString(json['order_status'] as String? ?? 'placed'),
       deliveryOtp: json['delivery_otp'] as String? ?? '4921',
       deliveryInstructions: json['delivery_instructions'] as String?,
+      cancelledBy: json['cancelled_by'] as String?,
       cancellationReason: json['cancellation_reason'] as String?,
+      cancelledAt: json['cancelled_at'] != null ? DateTime.tryParse(json['cancelled_at'] as String) : null,
+      refundStatus: json['refund_status'] as String?,
       createdAt: json['created_at'] != null
           ? DateTime.tryParse(json['created_at'] as String) ?? DateTime.now()
           : DateTime.now(),
@@ -151,7 +187,10 @@ class OrderModel {
       'order_status': status.value,
       'delivery_otp': deliveryOtp,
       'delivery_instructions': deliveryInstructions,
+      'cancelled_by': cancelledBy,
       'cancellation_reason': cancellationReason,
+      'cancelled_at': cancelledAt?.toIso8601String(),
+      'refund_status': refundStatus,
       'created_at': createdAt.toIso8601String(),
       'estimated_delivery_minutes': estimatedDeliveryMinutes,
     };
@@ -175,7 +214,10 @@ class OrderModel {
     OrderStatus? status,
     String? deliveryOtp,
     String? deliveryInstructions,
+    String? cancelledBy,
     String? cancellationReason,
+    DateTime? cancelledAt,
+    String? refundStatus,
     DateTime? createdAt,
     int? estimatedDeliveryMinutes,
   }) {
@@ -197,7 +239,10 @@ class OrderModel {
       status: status ?? this.status,
       deliveryOtp: deliveryOtp ?? this.deliveryOtp,
       deliveryInstructions: deliveryInstructions ?? this.deliveryInstructions,
+      cancelledBy: cancelledBy ?? this.cancelledBy,
       cancellationReason: cancellationReason ?? this.cancellationReason,
+      cancelledAt: cancelledAt ?? this.cancelledAt,
+      refundStatus: refundStatus ?? this.refundStatus,
       createdAt: createdAt ?? this.createdAt,
       estimatedDeliveryMinutes: estimatedDeliveryMinutes ?? this.estimatedDeliveryMinutes,
     );

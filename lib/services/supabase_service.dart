@@ -1160,11 +1160,15 @@ class SupabaseService {
 
       final isAddrUuid = RegExp(r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$').hasMatch(address.id);
       final encodedInstructions = _encodeItemsInInstructions(deliveryInstructions, items);
+      final currentAuthUser = client.auth.currentUser;
+      final effectiveUserId = (currentAuthUser != null && currentAuthUser.id.isNotEmpty)
+          ? currentAuthUser.id
+          : (isUuid ? userId : (userId.isNotEmpty && userId != '00000000-0000-0000-0000-000000000000' ? userId : null));
 
       // 2. Insert into orders table
       final orderData = {
         'order_number': orderNum,
-        'user_id': validUserId,
+        if (effectiveUserId != null) 'user_id': effectiveUserId,
         'store_id': storeId,
         'address_id': isAddrUuid ? address.id : null,
         'item_total': itemTotal,
@@ -1173,10 +1177,11 @@ class SupabaseService {
         'taxes': packagingFee,
         'grand_total': grandTotal,
         'payment_method': paymentMethod,
-        'payment_status': paymentMethod == 'cod' ? 'pending' : 'completed',
+        'payment_status': paymentMethod == 'cod' ? 'pending' : 'captured',
         'order_status': 'placed',
         'delivery_otp': '${1000 + (DateTime.now().millisecond * 9) % 9000}',
         'delivery_instructions': encodedInstructions,
+        'refund_status': 'none',
       };
 
       final orderRes = await client.from('orders').insert(orderData).select().single();
@@ -1198,6 +1203,16 @@ class SupabaseService {
           debugPrint('[SupabaseService] Error inserting order item: $itemErr');
         }
       }
+
+      // 4. Record initial status history
+      try {
+        await client.from('order_status_history').insert({
+          'order_id': newOrderId,
+          'status': 'placed',
+          'notes': 'Order placed by customer',
+          if (effectiveUserId != null) 'created_by': effectiveUserId,
+        });
+      } catch (_) {}
 
       final createdOrder = OrderModel.fromJson(orderRes, items: items, address: address);
       _localOrders.insert(0, createdOrder);
@@ -1232,10 +1247,11 @@ class SupabaseService {
         tipAmount: tipAmount,
         grandTotal: grandTotal,
         paymentMethod: paymentMethod,
-        paymentStatus: paymentMethod == 'cod' ? 'pending' : 'completed',
+        paymentStatus: paymentMethod == 'cod' ? 'pending' : 'captured',
         status: OrderStatus.placed,
         deliveryOtp: '${1000 + (DateTime.now().millisecond * 9) % 9000}',
         deliveryInstructions: deliveryInstructions,
+        refundStatus: 'none',
       );
       _localOrders.insert(0, localOrder);
       await _persistCustomOrders();
@@ -1282,6 +1298,38 @@ class SupabaseService {
         await prefs.setString('qb_status_${o.orderNumber}', o.status.value);
         await prefs.setString('qb_status_$cleanNum', o.status.value);
         await prefs.setString('qb_status_#$cleanNum', o.status.value);
+
+        if (o.cancellationReason != null) {
+          await prefs.setString('qb_cancel_reason_${o.id}', o.cancellationReason!);
+          await prefs.setString('qb_cancel_reason_${o.orderNumber}', o.cancellationReason!);
+          await prefs.setString('qb_cancel_reason_$cleanNum', o.cancellationReason!);
+          await prefs.setString('qb_cancel_reason_#$cleanNum', o.cancellationReason!);
+        }
+        if (o.cancelledBy != null) {
+          await prefs.setString('qb_cancelled_by_${o.id}', o.cancelledBy!);
+          await prefs.setString('qb_cancelled_by_${o.orderNumber}', o.cancelledBy!);
+          await prefs.setString('qb_cancelled_by_$cleanNum', o.cancelledBy!);
+          await prefs.setString('qb_cancelled_by_#$cleanNum', o.cancelledBy!);
+        }
+        if (o.cancelledAt != null) {
+          final cat = o.cancelledAt!.toIso8601String();
+          await prefs.setString('qb_cancelled_at_${o.id}', cat);
+          await prefs.setString('qb_cancelled_at_${o.orderNumber}', cat);
+          await prefs.setString('qb_cancelled_at_$cleanNum', cat);
+          await prefs.setString('qb_cancelled_at_#$cleanNum', cat);
+        }
+        if (o.refundStatus != null) {
+          await prefs.setString('qb_refund_status_${o.id}', o.refundStatus!);
+          await prefs.setString('qb_refund_status_${o.orderNumber}', o.refundStatus!);
+          await prefs.setString('qb_refund_status_$cleanNum', o.refundStatus!);
+          await prefs.setString('qb_refund_status_#$cleanNum', o.refundStatus!);
+        }
+        if (o.paymentStatus.isNotEmpty) {
+          await prefs.setString('qb_payment_status_${o.id}', o.paymentStatus);
+          await prefs.setString('qb_payment_status_${o.orderNumber}', o.paymentStatus);
+          await prefs.setString('qb_payment_status_$cleanNum', o.paymentStatus);
+          await prefs.setString('qb_payment_status_#$cleanNum', o.paymentStatus);
+        }
       }
     } catch (e) {
       debugPrint('[SupabaseService] Error persisting custom orders: $e');
@@ -1310,6 +1358,12 @@ class SupabaseService {
             _localOrders.insert(0, order);
           } else {
             _localOrders[idx] = _localOrders[idx].copyWith(
+              status: order.status,
+              cancelledBy: order.cancelledBy ?? _localOrders[idx].cancelledBy,
+              cancellationReason: order.cancellationReason ?? _localOrders[idx].cancellationReason,
+              cancelledAt: order.cancelledAt ?? _localOrders[idx].cancelledAt,
+              refundStatus: order.refundStatus ?? _localOrders[idx].refundStatus,
+              paymentStatus: order.paymentStatus.isNotEmpty ? order.paymentStatus : _localOrders[idx].paymentStatus,
               items: _localOrders[idx].items.isEmpty && order.items.isNotEmpty ? order.items : _localOrders[idx].items,
             );
           }
@@ -1322,7 +1376,7 @@ class SupabaseService {
 
   OrderModel _syncOrderWithLatestStatus(OrderModel order, SharedPreferences prefs) {
     final cleanNum = order.orderNumber.replaceAll('#', '').trim();
-    final saved = prefs.getString('qb_status_${order.id}') ??
+    final savedStatus = prefs.getString('qb_status_${order.id}') ??
         prefs.getString('qb_status_${order.orderNumber}') ??
         prefs.getString('qb_status_$cleanNum') ??
         prefs.getString('qb_status_#$cleanNum');
@@ -1331,15 +1385,37 @@ class SupabaseService {
         prefs.getString('qb_cancel_reason_$cleanNum') ??
         prefs.getString('qb_cancel_reason_#$cleanNum') ??
         order.cancellationReason;
-    if (saved != null) {
-      final latest = OrderStatusExtension.fromString(saved);
-      if (order.status != latest || order.cancellationReason != reason) {
-        return order.copyWith(status: latest, cancellationReason: reason);
-      }
-    } else if (order.cancellationReason != reason) {
-      return order.copyWith(cancellationReason: reason);
-    }
-    return order;
+    final by = prefs.getString('qb_cancelled_by_${order.id}') ??
+        prefs.getString('qb_cancelled_by_${order.orderNumber}') ??
+        prefs.getString('qb_cancelled_by_$cleanNum') ??
+        prefs.getString('qb_cancelled_by_#$cleanNum') ??
+        order.cancelledBy;
+    final atStr = prefs.getString('qb_cancelled_at_${order.id}') ??
+        prefs.getString('qb_cancelled_at_${order.orderNumber}') ??
+        prefs.getString('qb_cancelled_at_$cleanNum') ??
+        prefs.getString('qb_cancelled_at_#$cleanNum');
+    final refund = prefs.getString('qb_refund_status_${order.id}') ??
+        prefs.getString('qb_refund_status_${order.orderNumber}') ??
+        prefs.getString('qb_refund_status_$cleanNum') ??
+        prefs.getString('qb_refund_status_#$cleanNum') ??
+        order.refundStatus;
+    final payStatus = prefs.getString('qb_payment_status_${order.id}') ??
+        prefs.getString('qb_payment_status_${order.orderNumber}') ??
+        prefs.getString('qb_payment_status_$cleanNum') ??
+        prefs.getString('qb_payment_status_#$cleanNum') ??
+        order.paymentStatus;
+
+    final latestStatus = savedStatus != null ? OrderStatusExtension.fromString(savedStatus) : order.status;
+    final parsedAt = atStr != null ? DateTime.tryParse(atStr) : order.cancelledAt;
+
+    return order.copyWith(
+      status: latestStatus,
+      cancellationReason: reason,
+      cancelledBy: by,
+      cancelledAt: parsedAt,
+      refundStatus: refund,
+      paymentStatus: payStatus,
+    );
   }
 
   Future<List<OrderModel>> getUserOrders(String userId) async {
@@ -1815,7 +1891,15 @@ class SupabaseService {
   }
 
   /// Update order status from Store Manager Dashboard (PRD Section 6.2)
-  Future<bool> updateOrderStatus(String orderId, OrderStatus newStatus, {String? cancellationReason}) async {
+  Future<bool> updateOrderStatus(
+    String orderId,
+    OrderStatus newStatus, {
+    String? cancellationReason,
+    String? cancelledBy,
+    DateTime? cancelledAt,
+    String? refundStatus,
+    String? paymentStatus,
+  }) async {
     final cleanId = orderId.replaceAll('#', '').trim();
     final index = _localOrders.indexWhere((o) {
       final cleanNum = o.orderNumber.replaceAll('#', '').trim();
@@ -1825,6 +1909,9 @@ class SupabaseService {
           cleanNum == cleanId;
     });
 
+    final isCancelled = newStatus == OrderStatus.cancelled;
+    final effectiveCancelledAt = isCancelled ? (cancelledAt ?? DateTime.now()) : null;
+
     // 1. Persist status to cross-tab shared storage FIRST so any immediate reads see the new status
     try {
       final prefs = await SharedPreferences.getInstance();
@@ -1832,11 +1919,34 @@ class SupabaseService {
       await prefs.setString('qb_status_$orderId', newStatus.value);
       await prefs.setString('qb_status_$cleanId', newStatus.value);
       await prefs.setString('qb_status_#$cleanId', newStatus.value);
+
       if (cancellationReason != null) {
         await prefs.setString('qb_cancel_reason_$orderId', cancellationReason);
         await prefs.setString('qb_cancel_reason_$cleanId', cancellationReason);
         await prefs.setString('qb_cancel_reason_#$cleanId', cancellationReason);
       }
+      if (cancelledBy != null) {
+        await prefs.setString('qb_cancelled_by_$orderId', cancelledBy);
+        await prefs.setString('qb_cancelled_by_$cleanId', cancelledBy);
+        await prefs.setString('qb_cancelled_by_#$cleanId', cancelledBy);
+      }
+      if (effectiveCancelledAt != null) {
+        final cat = effectiveCancelledAt.toIso8601String();
+        await prefs.setString('qb_cancelled_at_$orderId', cat);
+        await prefs.setString('qb_cancelled_at_$cleanId', cat);
+        await prefs.setString('qb_cancelled_at_#$cleanId', cat);
+      }
+      if (refundStatus != null) {
+        await prefs.setString('qb_refund_status_$orderId', refundStatus);
+        await prefs.setString('qb_refund_status_$cleanId', refundStatus);
+        await prefs.setString('qb_refund_status_#$cleanId', refundStatus);
+      }
+      if (paymentStatus != null) {
+        await prefs.setString('qb_payment_status_$orderId', paymentStatus);
+        await prefs.setString('qb_payment_status_$cleanId', paymentStatus);
+        await prefs.setString('qb_payment_status_#$cleanId', paymentStatus);
+      }
+
       if (index == -1) {
         _loadCustomOrdersFromPrefs(prefs);
       }
@@ -1856,15 +1966,46 @@ class SupabaseService {
         await prefs.setString('qb_status_${o.orderNumber}', newStatus.value);
         await prefs.setString('qb_status_$cleanNum', newStatus.value);
         await prefs.setString('qb_status_#$cleanNum', newStatus.value);
+
         if (cancellationReason != null) {
           await prefs.setString('qb_cancel_reason_${o.id}', cancellationReason);
           await prefs.setString('qb_cancel_reason_${o.orderNumber}', cancellationReason);
           await prefs.setString('qb_cancel_reason_$cleanNum', cancellationReason);
           await prefs.setString('qb_cancel_reason_#$cleanNum', cancellationReason);
         }
+        if (cancelledBy != null) {
+          await prefs.setString('qb_cancelled_by_${o.id}', cancelledBy);
+          await prefs.setString('qb_cancelled_by_${o.orderNumber}', cancelledBy);
+          await prefs.setString('qb_cancelled_by_$cleanNum', cancelledBy);
+          await prefs.setString('qb_cancelled_by_#$cleanNum', cancelledBy);
+        }
+        if (effectiveCancelledAt != null) {
+          final cat = effectiveCancelledAt.toIso8601String();
+          await prefs.setString('qb_cancelled_at_${o.id}', cat);
+          await prefs.setString('qb_cancelled_at_${o.orderNumber}', cat);
+          await prefs.setString('qb_cancelled_at_$cleanNum', cat);
+          await prefs.setString('qb_cancelled_at_#$cleanNum', cat);
+        }
+        if (refundStatus != null) {
+          await prefs.setString('qb_refund_status_${o.id}', refundStatus);
+          await prefs.setString('qb_refund_status_${o.orderNumber}', refundStatus);
+          await prefs.setString('qb_refund_status_$cleanNum', refundStatus);
+          await prefs.setString('qb_refund_status_#$cleanNum', refundStatus);
+        }
+        if (paymentStatus != null) {
+          await prefs.setString('qb_payment_status_${o.id}', paymentStatus);
+          await prefs.setString('qb_payment_status_${o.orderNumber}', paymentStatus);
+          await prefs.setString('qb_payment_status_$cleanNum', paymentStatus);
+          await prefs.setString('qb_payment_status_#$cleanNum', paymentStatus);
+        }
+
         _localOrders[targetIdx] = o.copyWith(
           status: newStatus,
           cancellationReason: cancellationReason ?? o.cancellationReason,
+          cancelledBy: cancelledBy ?? o.cancelledBy,
+          cancelledAt: effectiveCancelledAt ?? o.cancelledAt,
+          refundStatus: refundStatus ?? o.refundStatus,
+          paymentStatus: paymentStatus ?? o.paymentStatus,
         );
         await _persistCustomOrders();
       }
@@ -1878,15 +2019,35 @@ class SupabaseService {
     if (!_isInitialized) return true;
 
     try {
-      if (_isUuid(cleanId)) {
-        await client.from('orders').update({
-          'order_status': newStatus.value,
-        }).eq('id', cleanId);
+      final updateData = <String, dynamic>{
+        'order_status': newStatus.value,
+      };
+      if (isCancelled) {
+        if (cancelledBy != null) updateData['cancelled_by'] = cancelledBy;
+        if (cancellationReason != null) updateData['cancellation_reason'] = cancellationReason;
+        updateData['cancelled_at'] = (effectiveCancelledAt ?? DateTime.now()).toIso8601String();
+        if (refundStatus != null) updateData['refund_status'] = refundStatus;
+        if (paymentStatus != null) updateData['payment_status'] = paymentStatus;
       } else {
-        await client.from('orders').update({
-          'order_status': newStatus.value,
-        }).or('order_number.eq.$cleanId,order_number.eq.#$cleanId');
+        if (paymentStatus != null) updateData['payment_status'] = paymentStatus;
+        if (refundStatus != null) updateData['refund_status'] = refundStatus;
       }
+
+      if (_isUuid(cleanId)) {
+        await client.from('orders').update(updateData).eq('id', cleanId);
+      } else {
+        await client.from('orders').update(updateData).or('order_number.eq.$cleanId,order_number.eq.#$cleanId');
+      }
+
+      // Record status history in Supabase - never delete!
+      try {
+        await client.from('order_status_history').insert({
+          'order_id': cleanId,
+          'status': newStatus.value,
+          'notes': cancellationReason ?? 'Status changed to ${newStatus.displayName}',
+        });
+      } catch (_) {}
+
       return true;
     } catch (e) {
       debugPrint('[SupabaseService] Error updating order status in DB: $e');
@@ -2216,14 +2377,31 @@ class SupabaseService {
   }
 
   /// Cancel an order within cancellation window and auto-restore stock
-  Future<bool> cancelOrder(String orderId, {String reason = 'Cancelled by customer'}) async {
-    final order = getOrderById(orderId);
+  Future<bool> cancelOrder(
+    String orderId, {
+    String reason = 'Cancelled by customer',
+    String cancelledBy = 'customer',
+  }) async {
+    final cleanId = orderId.replaceAll('#', '').trim();
+    final order = getOrderById(orderId) ?? getOrderById(cleanId) ?? getOrderById('#$cleanId');
     if (order == null) return false;
     if (order.status == OrderStatus.delivered || order.status == OrderStatus.cancelled) {
       return false;
     }
 
-    await updateOrderStatus(orderId, OrderStatus.cancelled, cancellationReason: reason);
+    final isCod = order.isCod;
+    final refundStatus = isCod ? 'none' : 'initiated';
+    final paymentStatus = isCod ? 'pending' : 'refunded';
+
+    await updateOrderStatus(
+      orderId,
+      OrderStatus.cancelled,
+      cancellationReason: reason,
+      cancelledBy: cancelledBy,
+      cancelledAt: DateTime.now(),
+      refundStatus: refundStatus,
+      paymentStatus: paymentStatus,
+    );
     await restoreOrderStock(order);
     return true;
   }
