@@ -21,6 +21,7 @@ class OrderFlow {
       case OrderStatus.confirmed:
         return OrderStatus.packing;
       case OrderStatus.packing:
+      case OrderStatus.partnerAssigned:
         return OrderStatus.outForDelivery;
       case OrderStatus.outForDelivery:
         return OrderStatus.delivered;
@@ -38,6 +39,8 @@ class OrderFlow {
         return 'Start packing';
       case OrderStatus.packing:
         return 'Handover to rider';
+      case OrderStatus.partnerAssigned:
+        return 'Dispatch to customer';
       case OrderStatus.outForDelivery:
         return 'Verify OTP & deliver';
       case OrderStatus.delivered:
@@ -54,6 +57,8 @@ class OrderFlow {
         return 'Start packing';
       case OrderStatus.packing:
         return 'Handover';
+      case OrderStatus.partnerAssigned:
+        return 'Dispatch';
       case OrderStatus.outForDelivery:
         return 'Verify OTP';
       case OrderStatus.delivered:
@@ -71,6 +76,8 @@ class OrderFlow {
         return 'sent for packing';
       case OrderStatus.packing:
         return 'handed to a rider';
+      case OrderStatus.partnerAssigned:
+        return 'dispatched';
       case OrderStatus.outForDelivery:
         return 'delivered';
       case OrderStatus.delivered:
@@ -87,6 +94,8 @@ class OrderFlow {
         return 'Confirmed';
       case OrderStatus.packing:
         return 'Picking & packing';
+      case OrderStatus.partnerAssigned:
+        return 'Rider assigned';
       case OrderStatus.outForDelivery:
         return 'Out for delivery';
       case OrderStatus.delivered:

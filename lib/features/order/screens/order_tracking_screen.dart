@@ -247,6 +247,7 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen> {
       case OrderStatus.confirmed:
         return 1;
       case OrderStatus.packing:
+      case OrderStatus.partnerAssigned:
         return 2;
       case OrderStatus.outForDelivery:
         return 3;

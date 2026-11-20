@@ -11,6 +11,9 @@ import '../models/cart_item_model.dart';
 import '../models/address_model.dart';
 import '../models/order_model.dart';
 import '../models/delivery_area_model.dart';
+import '../models/delivery_partner_model.dart';
+import '../core/config/delivery_config.dart';
+import '../features/rider/data/test_rider_fixtures.dart';
 import 'mock_data_service.dart';
 
 /// Central Supabase service handling client initialization,
@@ -25,8 +28,14 @@ class SupabaseService {
   final List<OrderModel> _localOrders = [];
   List<OrderModel> get localOrders => _localOrders;
 
+  final List<DeliveryPartnerModel> _localRiders = [];
+  List<DeliveryPartnerModel> get localRiders => _localRiders;
+
   /// Reactive notifier for real-time order updates across customer & store screens
   final ValueNotifier<List<OrderModel>> ordersNotifier = ValueNotifier<List<OrderModel>>([]);
+
+  /// Reactive notifier for real-time delivery partner status updates
+  final ValueNotifier<List<DeliveryPartnerModel>> ridersNotifier = ValueNotifier<List<DeliveryPartnerModel>>([]);
 
   /// Reactive notifier for real-time category & subcategory updates across customer & admin screens
   final ValueNotifier<int> categoriesNotifier = ValueNotifier<int>(0);
@@ -1364,6 +1373,16 @@ class SupabaseService {
               cancelledAt: order.cancelledAt ?? _localOrders[idx].cancelledAt,
               refundStatus: order.refundStatus ?? _localOrders[idx].refundStatus,
               paymentStatus: order.paymentStatus.isNotEmpty ? order.paymentStatus : _localOrders[idx].paymentStatus,
+              riderId: order.riderId ?? _localOrders[idx].riderId,
+              riderName: order.riderName ?? _localOrders[idx].riderName,
+              riderPhone: order.riderPhone ?? _localOrders[idx].riderPhone,
+              riderVehicleNumber: order.riderVehicleNumber ?? _localOrders[idx].riderVehicleNumber,
+              deliveryStage: order.deliveryStage ?? _localOrders[idx].deliveryStage,
+              assignedAt: order.assignedAt ?? _localOrders[idx].assignedAt,
+              pickedUpAt: order.pickedUpAt ?? _localOrders[idx].pickedUpAt,
+              deliveredAt: order.deliveredAt ?? _localOrders[idx].deliveredAt,
+              otpAttempts: order.otpAttempts > 0 ? order.otpAttempts : _localOrders[idx].otpAttempts,
+              otpExpiresAt: order.otpExpiresAt ?? _localOrders[idx].otpExpiresAt,
               items: _localOrders[idx].items.isEmpty && order.items.isNotEmpty ? order.items : _localOrders[idx].items,
             );
           }
@@ -2474,5 +2493,435 @@ class SupabaseService {
       debugPrint('[SupabaseService] Error inserting product in DB: $e');
       return newProduct;
     }
+  }
+
+  // ==========================================
+  // DELIVERY PARTNER (RIDER) METHODS
+  // ==========================================
+
+  void _notifyRidersChanged() {
+    ridersNotifier.value = List.unmodifiable(_localRiders);
+  }
+
+  Future<void> _persistCustomRiders() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.reload();
+      final ridersJson = _localRiders.map((r) => r.toJson()).toList();
+      await prefs.setString('qb_delivery_partners_json', jsonEncode(ridersJson));
+      for (final r in _localRiders) {
+        await prefs.setString('qb_rider_status_${r.id}', r.status.value);
+        if (r.activeOrderId != null) {
+          await prefs.setString('qb_rider_active_order_${r.id}', r.activeOrderId!);
+        } else {
+          await prefs.remove('qb_rider_active_order_${r.id}');
+        }
+      }
+    } catch (e) {
+      debugPrint('[SupabaseService] Error persisting custom riders: $e');
+    }
+  }
+
+  Future<void> _loadCustomRidersFromPrefs() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.reload();
+      final raw = prefs.getString('qb_delivery_partners_json');
+      if (raw != null && raw.isNotEmpty) {
+        final List<dynamic> list = jsonDecode(raw);
+        for (final item in list) {
+          final map = item as Map<String, dynamic>;
+          final rider = DeliveryPartnerModel.fromJson(map);
+          final savedStatus = prefs.getString('qb_rider_status_${rider.id}');
+          final savedActiveOrder = prefs.getString('qb_rider_active_order_${rider.id}');
+          final effective = rider.copyWith(
+            status: savedStatus != null ? DeliveryPartnerStatusExtension.fromString(savedStatus) : rider.status,
+            activeOrderId: savedActiveOrder ?? rider.activeOrderId,
+          );
+          final idx = _localRiders.indexWhere((r) => r.id == effective.id);
+          if (idx == -1) {
+            _localRiders.add(effective);
+          } else {
+            _localRiders[idx] = effective;
+          }
+        }
+      }
+    } catch (e) {
+      debugPrint('[SupabaseService] Error loading custom riders from prefs: $e');
+    }
+  }
+
+  /// Fetch all delivery partners
+  Future<List<DeliveryPartnerModel>> getDeliveryPartners() async {
+    if (_localRiders.isEmpty) {
+      _localRiders.addAll(TestRiderFixtures.defaultTestRiders);
+    }
+    await _loadCustomRidersFromPrefs();
+    _notifyRidersChanged();
+
+    if (!_isInitialized) {
+      return List<DeliveryPartnerModel>.from(_localRiders);
+    }
+
+    try {
+      final response = await client
+          .from('delivery_partners')
+          .select()
+          .order('name');
+      final data = response as List<dynamic>;
+      if (data.isNotEmpty) {
+        for (final json in data) {
+          final partner = DeliveryPartnerModel.fromJson(json as Map<String, dynamic>);
+          final idx = _localRiders.indexWhere((r) => r.id == partner.id);
+          if (idx == -1) {
+            _localRiders.add(partner);
+          } else {
+            _localRiders[idx] = partner;
+          }
+        }
+        await _persistCustomRiders();
+        _notifyRidersChanged();
+      }
+      return List<DeliveryPartnerModel>.from(_localRiders);
+    } catch (e) {
+      debugPrint('[SupabaseService] Error fetching delivery partners from DB: $e');
+      return List<DeliveryPartnerModel>.from(_localRiders);
+    }
+  }
+
+  /// Get available online delivery partners for assignment
+  Future<List<DeliveryPartnerModel>> getAvailableRiders() async {
+    final all = await getDeliveryPartners();
+    return all.where((r) => r.isAvailableForAssignment).toList();
+  }
+
+  /// Create or add a new delivery partner (New riders strictly default to Offline)
+  Future<DeliveryPartnerModel> addDeliveryPartner({
+    required String name,
+    required String phone,
+    required String vehicleNumber,
+    String vehicleType = 'bike',
+    DeliveryPartnerStatus status = DeliveryPartnerStatus.offline, // Default to offline!
+  }) async {
+    final newId = 'rider-${DateTime.now().millisecondsSinceEpoch}';
+    final rider = DeliveryPartnerModel(
+      id: newId,
+      name: name,
+      phone: phone,
+      vehicleNumber: vehicleNumber,
+      vehicleType: vehicleType,
+      status: status, // Defaults to offline
+      currentLatitude: DeliveryConfig.defaultStoreLatitude,
+      currentLongitude: DeliveryConfig.defaultStoreLongitude,
+      rating: 5.0,
+      totalDeliveries: 0,
+    );
+
+    _localRiders.add(rider);
+    await _persistCustomRiders();
+    _notifyRidersChanged();
+
+    if (_isInitialized) {
+      try {
+        await client.from('delivery_partners').insert(rider.toJson());
+      } catch (e) {
+        debugPrint('[SupabaseService] Error adding delivery partner to DB: $e');
+      }
+    }
+    return rider;
+  }
+
+  /// Update a delivery partner's status (e.g. toggle online/offline)
+  Future<bool> updateDeliveryPartnerStatus(String riderId, DeliveryPartnerStatus newStatus) async {
+    final idx = _localRiders.indexWhere((r) => r.id == riderId);
+    if (idx != -1) {
+      _localRiders[idx] = _localRiders[idx].copyWith(status: newStatus);
+      await _persistCustomRiders();
+      _notifyRidersChanged();
+    }
+
+    if (_isInitialized) {
+      try {
+        await client.from('delivery_partners').update({
+          'status': newStatus.value,
+          'updated_at': DateTime.now().toIso8601String(),
+        }).eq('id', riderId);
+      } catch (e) {
+        debugPrint('[SupabaseService] Error updating delivery partner status in DB: $e');
+      }
+    }
+    return true;
+  }
+
+  /// Assign an order to a delivery partner
+  Future<bool> assignRiderToOrder({
+    required String orderId,
+    required String riderId,
+  }) async {
+    final riders = await getDeliveryPartners();
+    final rider = riders.firstWhere(
+      (r) => r.id == riderId,
+      orElse: () => DeliveryPartnerModel(
+        id: riderId,
+        name: 'Delivery Partner',
+        phone: '+91 98765 43210',
+        vehicleNumber: 'TS 08 AB 1234',
+        status: DeliveryPartnerStatus.offline,
+      ),
+    );
+
+    final cleanId = orderId.replaceAll('#', '').trim();
+    final orderIdx = _localOrders.indexWhere((o) {
+      final cleanNum = o.orderNumber.replaceAll('#', '').trim();
+      return o.id == orderId || o.id == cleanId || o.orderNumber == orderId || cleanNum == cleanId;
+    });
+
+    final now = DateTime.now();
+
+    // 1. Update order locally
+    if (orderIdx != -1) {
+      final current = _localOrders[orderIdx];
+      _localOrders[orderIdx] = current.copyWith(
+        status: OrderStatus.partnerAssigned,
+        riderId: rider.id,
+        riderName: rider.name,
+        riderPhone: rider.phone,
+        riderVehicleNumber: rider.vehicleNumber,
+        deliveryStage: 'assigned',
+        assignedAt: now,
+      );
+      await _persistCustomOrders();
+      _notifyOrdersChanged();
+    }
+
+    // 2. Mark rider as busy on active order
+    final rIdx = _localRiders.indexWhere((r) => r.id == rider.id);
+    if (rIdx != -1) {
+      _localRiders[rIdx] = _localRiders[rIdx].copyWith(
+        status: DeliveryPartnerStatus.busy,
+        activeOrderId: orderId,
+      );
+      await _persistCustomRiders();
+      _notifyRidersChanged();
+    }
+
+    if (_isInitialized) {
+      try {
+        final updateMap = {
+          'order_status': 'partner_assigned',
+          'rider_id': rider.id,
+          'rider_name': rider.name,
+          'rider_phone': rider.phone,
+          'rider_vehicle': rider.vehicleNumber,
+          'delivery_stage': 'assigned',
+          'assigned_at': now.toIso8601String(),
+          'updated_at': now.toIso8601String(),
+        };
+
+        if (_isUuid(cleanId)) {
+          await client.from('orders').update(updateMap).eq('id', cleanId);
+        } else {
+          await client.from('orders').update(updateMap).or('order_number.eq.$cleanId,order_number.eq.#$cleanId');
+        }
+
+        await client.from('delivery_partners').update({
+          'status': 'busy',
+          'active_order_id': cleanId,
+          'updated_at': now.toIso8601String(),
+        }).eq('id', rider.id);
+
+        await client.from('order_status_history').insert({
+          'order_id': cleanId,
+          'status': 'partner_assigned',
+          'notes': 'Order assigned to delivery partner ${rider.name}',
+        });
+      } catch (e) {
+        debugPrint('[SupabaseService] Error assigning rider in DB: $e');
+      }
+    }
+    return true;
+  }
+
+  /// Update rider delivery stage (e.g. accepted, reached_store, picked_up, out_for_delivery)
+  Future<bool> updateRiderDeliveryStage(String orderId, String stage) async {
+    final cleanId = orderId.replaceAll('#', '').trim();
+    final orderIdx = _localOrders.indexWhere((o) {
+      final cleanNum = o.orderNumber.replaceAll('#', '').trim();
+      return o.id == orderId || o.id == cleanId || o.orderNumber == orderId || cleanNum == cleanId;
+    });
+
+    final now = DateTime.now();
+    final isOutForDelivery = stage == 'picked_up' || stage == 'out_for_delivery';
+    final targetStatus = isOutForDelivery ? OrderStatus.outForDelivery : OrderStatus.partnerAssigned;
+
+    if (orderIdx != -1) {
+      final current = _localOrders[orderIdx];
+      _localOrders[orderIdx] = current.copyWith(
+        status: isOutForDelivery ? OrderStatus.outForDelivery : current.status,
+        deliveryStage: stage,
+        pickedUpAt: stage == 'picked_up' ? now : current.pickedUpAt,
+      );
+      await _persistCustomOrders();
+      _notifyOrdersChanged();
+    }
+
+    if (_isInitialized) {
+      try {
+        final updateMap = <String, dynamic>{
+          'delivery_stage': stage,
+          'updated_at': now.toIso8601String(),
+        };
+        if (isOutForDelivery) {
+          updateMap['order_status'] = 'out_for_delivery';
+        }
+        if (stage == 'picked_up') {
+          updateMap['picked_up_at'] = now.toIso8601String();
+        }
+
+        if (_isUuid(cleanId)) {
+          await client.from('orders').update(updateMap).eq('id', cleanId);
+        } else {
+          await client.from('orders').update(updateMap).or('order_number.eq.$cleanId,order_number.eq.#$cleanId');
+        }
+
+        await client.from('order_status_history').insert({
+          'order_id': cleanId,
+          'status': targetStatus.value,
+          'notes': 'Rider stage updated to $stage',
+        });
+      } catch (e) {
+        debugPrint('[SupabaseService] Error updating delivery stage in DB: $e');
+      }
+    }
+    return true;
+  }
+
+  /// Secure Doorstep OTP Verification
+  /// Conforms to Requirement #3:
+  /// - Enforces maximum 3 attempts
+  /// - Concurrency/lockout protection
+  /// - Validates OTP expiry
+  /// - Marks order delivered and logs delivered_at on success
+  Future<Map<String, dynamic>> verifyDoorstepOtp({
+    required String orderId,
+    required String enteredOtp,
+    required String riderId,
+  }) async {
+    final cleanId = orderId.replaceAll('#', '').trim();
+
+    if (_isInitialized) {
+      try {
+        final res = await client.rpc('verify_doorstep_otp', params: {
+          'p_order_id': cleanId,
+          'p_entered_otp': enteredOtp.trim(),
+          'p_rider_id': riderId,
+        });
+        if (res is Map<String, dynamic>) {
+          if (res['success'] == true) {
+            await updateOrderStatus(orderId, OrderStatus.delivered);
+          }
+          return res;
+        }
+      } catch (e) {
+        debugPrint('[SupabaseService] verify_doorstep_otp RPC call failed, falling back to secure local validator: $e');
+      }
+    }
+
+    // Secure local verification fallback (same business logic as backend RPC)
+    final order = getOrderById(orderId) ?? getOrderById(cleanId) ?? getOrderById('#$cleanId');
+    if (order == null) {
+      return {'success': false, 'error': 'Order not found'};
+    }
+
+    // 1. Verify rider assignment
+    if (order.riderId != null && order.riderId != riderId) {
+      return {'success': false, 'error': 'You are not assigned to this delivery'};
+    }
+
+    // 2. Check if already delivered or cancelled
+    if (order.status == OrderStatus.delivered) {
+      return {'success': false, 'error': 'Order has already been delivered'};
+    }
+    if (order.status == OrderStatus.cancelled) {
+      return {'success': false, 'error': 'Order was cancelled and cannot be delivered'};
+    }
+
+    // 3. Check attempts lockout (Max 3 attempts)
+    if (order.otpAttempts >= DeliveryConfig.maxOtpAttempts) {
+      return {
+        'success': false,
+        'locked': true,
+        'remaining_attempts': 0,
+        'error': 'Maximum OTP verification attempts exceeded. Order is locked. Please contact store support.',
+      };
+    }
+
+    // 4. Validate OTP expiry
+    if (order.otpExpiresAt != null && DateTime.now().isAfter(order.otpExpiresAt!)) {
+      return {
+        'success': false,
+        'expired': true,
+        'error': 'Delivery OTP has expired. Please ask the customer to request support.',
+      };
+    }
+
+    // 5. Compare entered OTP against order.deliveryOtp
+    if (order.deliveryOtp.trim() != enteredOtp.trim()) {
+      final newAttempts = order.otpAttempts + 1;
+      final remaining = (DeliveryConfig.maxOtpAttempts - newAttempts).clamp(0, DeliveryConfig.maxOtpAttempts);
+
+      final orderIdx = _localOrders.indexWhere((o) => o.id == order.id || o.orderNumber == order.orderNumber);
+      if (orderIdx != -1) {
+        _localOrders[orderIdx] = _localOrders[orderIdx].copyWith(otpAttempts: newAttempts);
+        await _persistCustomOrders();
+        _notifyOrdersChanged();
+      }
+
+      return {
+        'success': false,
+        'remaining_attempts': remaining,
+        'locked': remaining <= 0,
+        'error': remaining > 0
+            ? 'Incorrect OTP. $remaining attempt(s) remaining.'
+            : 'Maximum OTP verification attempts exceeded. Order is locked.',
+      };
+    }
+
+    // 6. OTP Correct! Transition order to delivered
+    final now = DateTime.now();
+    final orderIdx = _localOrders.indexWhere((o) => o.id == order.id || o.orderNumber == order.orderNumber);
+    if (orderIdx != -1) {
+      _localOrders[orderIdx] = _localOrders[orderIdx].copyWith(
+        status: OrderStatus.delivered,
+        deliveryStage: 'delivered',
+        deliveredAt: now,
+      );
+      await _persistCustomOrders();
+      _notifyOrdersChanged();
+    }
+
+    // 7. Update rider state: release active order & increment completed deliveries
+    final rIdx = _localRiders.indexWhere((r) => r.id == riderId);
+    if (rIdx != -1) {
+      _localRiders[rIdx] = _localRiders[rIdx].copyWith(
+        totalDeliveries: _localRiders[rIdx].totalDeliveries + 1,
+        status: DeliveryPartnerStatus.online, // Free for new orders
+        activeOrderId: null,
+      );
+      await _persistCustomRiders();
+      _notifyRidersChanged();
+    }
+
+    return {
+      'success': true,
+      'message': 'Delivery verified and marked as delivered successfully.',
+    };
+  }
+
+  /// Add or update an order in memory (useful for testing and deterministic local state)
+  void seedOrder(OrderModel order) {
+    _localOrders.removeWhere((o) => o.id == order.id || o.orderNumber == order.orderNumber);
+    _localOrders.insert(0, order);
+    _notifyOrdersChanged();
   }
 }

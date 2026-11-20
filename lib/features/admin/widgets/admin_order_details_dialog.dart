@@ -778,6 +778,11 @@ class _AdminOrderDetailsDialogState extends State<AdminOrderDetailsDialog> {
         fg = const Color(0xFFE65100);
         icon = Icons.inventory_2_rounded;
         break;
+      case OrderStatus.partnerAssigned:
+        bg = const Color(0xFFE0F2FE);
+        fg = const Color(0xFF0369A1);
+        icon = Icons.delivery_dining_rounded;
+        break;
       case OrderStatus.outForDelivery:
         bg = const Color(0xFFE1F5FE);
         fg = const Color(0xFF0288D1);

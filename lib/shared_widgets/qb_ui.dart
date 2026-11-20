@@ -493,6 +493,8 @@ class OrderStatusStyle {
         return const OrderStatusStyle('Confirmed', Color(0xFFF1ECFA), Color(0xFF5B3FA0));
       case OrderStatus.packing:
         return const OrderStatusStyle('Packing', AppColors.infoLight, Color(0xFF34479A));
+      case OrderStatus.partnerAssigned:
+        return const OrderStatusStyle('Rider Assigned', Color(0xFFE0F2FE), Color(0xFF0369A1));
       case OrderStatus.outForDelivery:
         return const OrderStatusStyle('Out for Delivery', AppColors.primaryLight, AppColors.primaryDeep);
       case OrderStatus.delivered:

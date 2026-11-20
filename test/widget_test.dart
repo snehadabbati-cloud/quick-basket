@@ -13,6 +13,8 @@ import 'package:quick_basket/models/order_model.dart';
 import 'package:quick_basket/models/cart_item_model.dart';
 import 'package:quick_basket/models/address_model.dart';
 import 'package:quick_basket/models/delivery_area_model.dart';
+import 'package:quick_basket/models/delivery_partner_model.dart';
+import 'package:quick_basket/core/config/delivery_config.dart';
 import 'package:quick_basket/shared_widgets/product_card.dart';
 
 void main() {
@@ -763,8 +765,185 @@ void main() {
     expect(OrderStatusExtension.fromString('pending'), OrderStatus.placed);
     expect(OrderStatusExtension.fromString('accepted'), OrderStatus.confirmed);
     expect(OrderStatusExtension.fromString('preparing'), OrderStatus.packing);
+    expect(OrderStatusExtension.fromString('partner_assigned'), OrderStatus.partnerAssigned);
     expect(OrderStatusExtension.fromString('out_for_delivery'), OrderStatus.outForDelivery);
     expect(OrderStatusExtension.fromString('delivered'), OrderStatus.delivered);
     expect(OrderStatusExtension.fromString('cancelled'), OrderStatus.cancelled);
+  });
+
+  test('DeliveryPartnerModel defaults to offline and serializes cleanly', () {
+    final newRider = DeliveryPartnerModel(
+      id: 'rider-001',
+      name: 'Ramesh Kumar',
+      phone: '+919876543210',
+      vehicleNumber: 'TS 09 AB 1234',
+    );
+
+    // Rule: New riders must default to offline
+    expect(newRider.status, DeliveryPartnerStatus.offline);
+    expect(newRider.isOnline, isFalse);
+    expect(newRider.isAvailable, isFalse);
+
+    final json = newRider.toJson();
+    expect(json['status'], 'offline');
+    expect(json['name'], 'Ramesh Kumar');
+
+    final parsed = DeliveryPartnerModel.fromJson(json);
+    expect(parsed.status, DeliveryPartnerStatus.offline);
+    expect(parsed.vehicleNumber, 'TS 09 AB 1234');
+  });
+
+  test('OrderModel toRiderView strips plain-text delivery OTP for security', () {
+    final customerOrder = OrderModel(
+      id: 'order-sec-1',
+      orderNumber: '#QB-101010',
+      userId: 'customer-1',
+      items: [],
+      itemTotal: 150.0,
+      grandTotal: 150.0,
+      deliveryOtp: '4821',
+      riderId: 'rider-001',
+      riderName: 'Ramesh Kumar',
+      status: OrderStatus.outForDelivery,
+    );
+
+    expect(customerOrder.deliveryOtp, '4821');
+
+    final riderOrderView = customerOrder.toRiderView();
+    // Security check: Rider view MUST NOT contain plain text delivery OTP
+    expect(riderOrderView.deliveryOtp, isEmpty);
+    expect(riderOrderView.riderId, 'rider-001');
+    expect(riderOrderView.riderName, 'Ramesh Kumar');
+  });
+
+  test('OrderModel serializes and deserializes all rider fields for Supabase', () {
+    final assignedTime = DateTime(2026, 11, 20, 10, 0, 0);
+    final pickedTime = DateTime(2026, 11, 20, 10, 15, 0);
+    final deliveredTime = DateTime(2026, 11, 20, 10, 30, 0);
+    final expiryTime = DateTime(2026, 11, 20, 12, 0, 0);
+
+    final order = OrderModel(
+      id: 'order-rider-fields',
+      orderNumber: '#QB-223344',
+      userId: 'cust-2',
+      items: [],
+      itemTotal: 250.0,
+      grandTotal: 250.0,
+      status: OrderStatus.partnerAssigned,
+      riderId: 'rider-001',
+      riderName: 'Ramesh Kumar',
+      riderPhone: '+919876543210',
+      riderVehicleNumber: 'TS 09 AB 1234',
+      deliveryStage: 'assigned',
+      assignedAt: assignedTime,
+      pickedUpAt: pickedTime,
+      deliveredAt: deliveredTime,
+      otpAttempts: 1,
+      otpExpiresAt: expiryTime,
+    );
+
+    final json = order.toJson();
+    expect(json['rider_id'], 'rider-001');
+    expect(json['rider_name'], 'Ramesh Kumar');
+    expect(json['rider_phone'], '+919876543210');
+    expect(json['rider_vehicle'], 'TS 09 AB 1234');
+    expect(json['delivery_stage'], 'assigned');
+    expect(json['order_status'], 'partner_assigned');
+    expect(json['otp_attempts'], 1);
+
+    final parsed = OrderModel.fromJson(json);
+    expect(parsed.riderId, 'rider-001');
+    expect(parsed.riderName, 'Ramesh Kumar');
+    expect(parsed.riderPhone, '+919876543210');
+    expect(parsed.riderVehicleNumber, 'TS 09 AB 1234');
+    expect(parsed.deliveryStage, 'assigned');
+    expect(parsed.status, OrderStatus.partnerAssigned);
+    expect(parsed.otpAttempts, 1);
+  });
+
+  test('DeliveryConfig centralizes constants and thresholds', () {
+    expect(DeliveryConfig.maxOtpAttempts, 3);
+    expect(DeliveryConfig.defaultPerDeliveryEarning, 40.0);
+    expect(DeliveryConfig.defaultStorePincode, '500090');
+    expect(DeliveryConfig.defaultStoreName, 'Nizampet Dark Store');
+  });
+
+  test('SupabaseService verifyDoorstepOtp enforces attempt limit, lockout, and atomic delivery completion', () async {
+    final service = SupabaseService();
+
+    // Setup an order with known OTP
+    final testOrder = OrderModel(
+      id: 'otp-test-order-1',
+      orderNumber: '#QB-778899',
+      userId: 'cust-otp-test',
+      items: [],
+      itemTotal: 300.0,
+      grandTotal: 300.0,
+      status: OrderStatus.outForDelivery,
+      deliveryStage: 'out_for_delivery',
+      deliveryOtp: '6543',
+      riderId: 'rider-test-01',
+      otpAttempts: 0,
+      otpExpiresAt: DateTime.now().add(const Duration(hours: 2)),
+    );
+
+    // Seed test order into service local cache
+    service.seedOrder(testOrder);
+    await service.assignRiderToOrder(
+      orderId: testOrder.id,
+      riderId: 'rider-test-01',
+    );
+
+    // 1. Wrong OTP Attempt 1
+    var result = await service.verifyDoorstepOtp(
+      orderId: testOrder.id,
+      enteredOtp: '0000',
+      riderId: 'rider-test-01',
+    );
+    expect(result['success'], isFalse);
+    expect(result['remaining_attempts'], 2);
+    expect(result['locked'], isFalse);
+
+    // 2. Wrong OTP Attempt 2
+    result = await service.verifyDoorstepOtp(
+      orderId: testOrder.id,
+      enteredOtp: '1111',
+      riderId: 'rider-test-01',
+    );
+    expect(result['success'], isFalse);
+    expect(result['remaining_attempts'], 1);
+    expect(result['locked'], isFalse);
+
+    // 3. Wrong OTP Attempt 3 -> Lockout
+    result = await service.verifyDoorstepOtp(
+      orderId: testOrder.id,
+      enteredOtp: '2222',
+      riderId: 'rider-test-01',
+    );
+    expect(result['success'], isFalse);
+    expect(result['remaining_attempts'], 0);
+    expect(result['locked'], isTrue);
+
+    // 4. Any further attempt is rejected even if correct OTP because of lockout
+    result = await service.verifyDoorstepOtp(
+      orderId: testOrder.id,
+      enteredOtp: '6543',
+      riderId: 'rider-test-01',
+    );
+    expect(result['success'], isFalse);
+    expect(result['locked'], isTrue);
+
+    // 5. Fresh order with correct OTP succeeds and transitions to delivered
+    final freshOrder = testOrder.copyWith(id: 'otp-success-order', otpAttempts: 0);
+    service.seedOrder(freshOrder);
+    result = await service.verifyDoorstepOtp(
+      orderId: freshOrder.id,
+      enteredOtp: '6543',
+      riderId: 'rider-test-01',
+    );
+    expect(result['success'], isTrue);
+    final deliveredOrder = service.getOrderById(freshOrder.id);
+    expect(deliveredOrder?.status, OrderStatus.delivered);
+    expect(deliveredOrder?.deliveredAt, isNotNull);
   });
 }
