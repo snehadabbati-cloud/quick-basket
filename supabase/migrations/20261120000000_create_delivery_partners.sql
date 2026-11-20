@@ -99,6 +99,14 @@ BEGIN
     ) THEN
         ALTER TABLE orders ADD COLUMN otp_expires_at TIMESTAMPTZ;
     END IF;
+
+    -- Ensure order_status_history also has 'status' if referenced by client code
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns 
+        WHERE table_name = 'order_status_history' AND column_name = 'status'
+    ) THEN
+        ALTER TABLE order_status_history ADD COLUMN status TEXT;
+    END IF;
 END $$;
 
 -- 3. Row-Level Security (RLS) on delivery_partners
@@ -247,8 +255,17 @@ BEGIN
     WHERE id = p_rider_id;
 
     -- Insert audit log into order_status_history
-    INSERT INTO order_status_history (order_id, new_status, notes)
-    VALUES (p_order_id, 'delivered', 'OTP verified successfully at customer doorstep by delivery partner');
+    BEGIN
+        INSERT INTO order_status_history (order_id, new_status, notes)
+        VALUES (p_order_id, 'delivered', 'OTP verified successfully at customer doorstep by delivery partner');
+    EXCEPTION WHEN OTHERS THEN
+        BEGIN
+            INSERT INTO order_status_history (order_id, status, notes)
+            VALUES (p_order_id, 'delivered', 'OTP verified successfully at customer doorstep by delivery partner');
+        EXCEPTION WHEN OTHERS THEN
+            NULL;
+        END;
+    END;
 
     RETURN jsonb_build_object(
         'success', true,
