@@ -3,6 +3,7 @@ import 'core/theme/app_theme.dart';
 import 'core/constants/app_strings.dart';
 import 'features/home/screens/home_screen.dart';
 import 'features/admin/screens/admin_login_screen.dart';
+import 'features/rider/screens/rider_login_screen.dart';
 import 'services/supabase_service.dart';
 
 void main() async {
@@ -29,6 +30,7 @@ class QuickBasketApp extends StatelessWidget {
         '/': (context) => const HomeScreen(),
         '/admin': (context) => const AdminLoginScreen(),
         '/store': (context) => const AdminLoginScreen(),
+        '/rider': (context) => const RiderLoginScreen(),
       },
     );
   }

@@ -2794,6 +2794,107 @@ class SupabaseService {
     return true;
   }
 
+  /// Reject an order assignment by a delivery partner.
+  /// Reverts order back to packing stage and frees the rider to accept other orders.
+  Future<bool> rejectOrderAssignment(String orderId, String riderId) async {
+    final cleanId = orderId.replaceAll('#', '').trim();
+    final orderIdx = _localOrders.indexWhere((o) {
+      final cleanNum = o.orderNumber.replaceAll('#', '').trim();
+      return o.id == orderId || o.id == cleanId || o.orderNumber == orderId || cleanNum == cleanId;
+    });
+
+    final now = DateTime.now();
+
+    // 1. Reset order assignment
+    if (orderIdx != -1) {
+      final current = _localOrders[orderIdx];
+      _localOrders[orderIdx] = OrderModel(
+        id: current.id,
+        orderNumber: current.orderNumber,
+        userId: current.userId,
+        storeId: current.storeId,
+        address: current.address,
+        items: current.items,
+        itemTotal: current.itemTotal,
+        discountAmount: current.discountAmount,
+        deliveryFee: current.deliveryFee,
+        packagingFee: current.packagingFee,
+        tipAmount: current.tipAmount,
+        grandTotal: current.grandTotal,
+        paymentMethod: current.paymentMethod,
+        paymentStatus: current.paymentStatus,
+        status: OrderStatus.packing,
+        deliveryOtp: current.deliveryOtp,
+        deliveryInstructions: current.deliveryInstructions,
+        cancellationReason: current.cancellationReason,
+        cancelledBy: current.cancelledBy,
+        cancelledAt: current.cancelledAt,
+        refundStatus: current.refundStatus,
+        createdAt: current.createdAt,
+        estimatedDeliveryMinutes: current.estimatedDeliveryMinutes,
+        riderId: null,
+        riderName: null,
+        riderPhone: null,
+        riderVehicleNumber: null,
+        deliveryStage: null,
+        assignedAt: null,
+        pickedUpAt: null,
+        deliveredAt: null,
+        otpAttempts: current.otpAttempts,
+        otpExpiresAt: current.otpExpiresAt,
+      );
+      await _persistCustomOrders();
+      _notifyOrdersChanged();
+    }
+
+    // 2. Free rider
+    final rIdx = _localRiders.indexWhere((r) => r.id == riderId);
+    if (rIdx != -1) {
+      _localRiders[rIdx] = _localRiders[rIdx].copyWith(
+        status: DeliveryPartnerStatus.online,
+        activeOrderId: null,
+      );
+      await _persistCustomRiders();
+      _notifyRidersChanged();
+    }
+
+    if (_isInitialized) {
+      try {
+        final updateMap = <String, dynamic>{
+          'order_status': 'preparing',
+          'rider_id': null,
+          'rider_name': null,
+          'rider_phone': null,
+          'rider_vehicle': null,
+          'delivery_stage': null,
+          'assigned_at': null,
+          'updated_at': now.toIso8601String(),
+        };
+
+        if (_isUuid(cleanId)) {
+          await client.from('orders').update(updateMap).eq('id', cleanId);
+        } else {
+          await client.from('orders').update(updateMap).or('order_number.eq.$cleanId,order_number.eq.#$cleanId');
+        }
+
+        await client.from('delivery_partners').update({
+          'status': 'online',
+          'active_order_id': null,
+          'updated_at': now.toIso8601String(),
+        }).eq('id', riderId);
+
+        await client.from('order_status_history').insert({
+          'order_id': cleanId,
+          'status': 'preparing',
+          'notes': 'Delivery request declined by rider. Returned to packing pool.',
+        });
+      } catch (e) {
+        debugPrint('[SupabaseService] Error declining order assignment in DB: $e');
+      }
+    }
+    return true;
+  }
+
   /// Secure Doorstep OTP Verification
   /// Conforms to Requirement #3:
   /// - Enforces maximum 3 attempts

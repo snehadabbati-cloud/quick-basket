@@ -2330,6 +2330,13 @@ class _HomeScreenState extends State<HomeScreen> {
         () => Navigator.pushNamed(context, '/admin'),
         true,
       ),
+      (
+        Icons.two_wheeler_rounded,
+        'Delivery Partner Portal',
+        'Rider deliveries, doorstep OTP & earnings',
+        () => Navigator.pushNamed(context, '/rider'),
+        true,
+      ),
     ];
 
     final content = ListView(
