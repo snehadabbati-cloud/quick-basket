@@ -3,7 +3,7 @@ import '../../../core/constants/app_colors.dart';
 import '../../../shared_widgets/qb_ui.dart';
 
 /// Admin pages reachable from the sidebar.
-enum AdminSection { dashboard, orders, reports, products, categories, inventory, customers, settings }
+enum AdminSection { dashboard, orders, reports, products, categories, inventory, customers, deliveryPartners, settings }
 
 extension AdminSectionInfo on AdminSection {
   String get label {
@@ -22,6 +22,8 @@ extension AdminSectionInfo on AdminSection {
         return 'Inventory';
       case AdminSection.customers:
         return 'Customers';
+      case AdminSection.deliveryPartners:
+        return 'Delivery Partners';
       case AdminSection.settings:
         return 'Settings';
     }
@@ -43,6 +45,8 @@ extension AdminSectionInfo on AdminSection {
         return Icons.warehouse_outlined;
       case AdminSection.customers:
         return Icons.people_outline_rounded;
+      case AdminSection.deliveryPartners:
+        return Icons.delivery_dining_rounded;
       case AdminSection.settings:
         return Icons.settings_outlined;
     }
@@ -82,7 +86,7 @@ class AdminSidebar extends StatelessWidget {
   static const _groups = [
     ('OVERVIEW', [AdminSection.dashboard, AdminSection.orders, AdminSection.reports]),
     ('CATALOG', [AdminSection.products, AdminSection.categories, AdminSection.inventory]),
-    ('PEOPLE', [AdminSection.customers]),
+    ('PEOPLE', [AdminSection.customers, AdminSection.deliveryPartners]),
     ('SYSTEM', [AdminSection.settings]),
   ];
 

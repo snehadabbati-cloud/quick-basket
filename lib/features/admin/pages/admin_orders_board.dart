@@ -156,7 +156,13 @@ class _AdminOrdersBoardState extends State<AdminOrdersBoard> {
                 runSpacing: 14,
                 children: [
                   for (var i = 0; i < OrderFlow.activeStages.length; i++)
-                    SizedBox(width: w, child: _column(i, orders.where((o) => o.status == OrderFlow.activeStages[i]).toList())),
+                    SizedBox(
+                      width: w,
+                      child: _column(
+                        i,
+                        orders.where((o) => o.status == OrderFlow.activeStages[i] || (OrderFlow.activeStages[i] == OrderStatus.packing && o.status == OrderStatus.partnerAssigned)).toList(),
+                      ),
+                    ),
                 ],
               );
             },

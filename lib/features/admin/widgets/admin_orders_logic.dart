@@ -12,7 +12,7 @@ class OrderFlow {
     OrderStatus.outForDelivery,
   ];
 
-  static bool isActive(OrderStatus s) => activeStages.contains(s);
+  static bool isActive(OrderStatus s) => activeStages.contains(s) || s == OrderStatus.partnerAssigned;
 
   static OrderStatus? next(OrderStatus s) {
     switch (s) {

@@ -2557,7 +2557,6 @@ class SupabaseService {
       _localRiders.addAll(TestRiderFixtures.defaultTestRiders);
     }
     await _loadCustomRidersFromPrefs();
-    _notifyRidersChanged();
 
     if (!_isInitialized) {
       return List<DeliveryPartnerModel>.from(_localRiders);
@@ -2580,7 +2579,6 @@ class SupabaseService {
           }
         }
         await _persistCustomRiders();
-        _notifyRidersChanged();
       }
       return List<DeliveryPartnerModel>.from(_localRiders);
     } catch (e) {

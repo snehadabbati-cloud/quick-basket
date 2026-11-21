@@ -8,6 +8,10 @@ import 'package:quick_basket/features/order/screens/order_tracking_screen.dart';
 import 'package:quick_basket/features/admin/pages/admin_overview_page.dart';
 import 'package:quick_basket/features/admin/screens/admin_categories_screen.dart';
 import 'package:quick_basket/features/admin/screens/admin_dashboard_screen.dart';
+import 'package:quick_basket/features/admin/pages/admin_delivery_partners_page.dart';
+import 'package:quick_basket/features/admin/widgets/add_delivery_partner_dialog.dart';
+import 'package:quick_basket/features/admin/widgets/assign_rider_dialog.dart';
+import 'package:quick_basket/features/admin/widgets/admin_sidebar.dart';
 import 'package:quick_basket/services/supabase_service.dart';
 import 'package:quick_basket/models/order_model.dart';
 import 'package:quick_basket/models/cart_item_model.dart';
@@ -945,5 +949,135 @@ void main() {
     final deliveredOrder = service.getOrderById(freshOrder.id);
     expect(deliveredOrder?.status, OrderStatus.delivered);
     expect(deliveredOrder?.deliveredAt, isNotNull);
+  });
+
+  testWidgets('Admin Panel: AddDeliveryPartnerDialog registers rider with strict default offline status', (WidgetTester tester) async {
+    useSize(tester, const Size(1200, 900));
+
+    await tester.pumpWidget(const MaterialApp(home: Scaffold(body: Center(child: AddDeliveryPartnerDialog()))));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Add Delivery Partner'), findsOneWidget);
+    expect(find.textContaining('New riders default to Offline status'), findsOneWidget);
+
+    // Fill rider details
+    final textFields = find.byType(TextFormField);
+    await tester.enterText(textFields.at(0), 'Anand Verma');
+    await tester.enterText(textFields.at(1), '9876501234');
+    await tester.enterText(textFields.at(2), 'TS 08 EF 4321');
+
+    await tester.tap(find.text('Register Partner'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+
+    // Verify rider in service has status offline
+    final riders = await SupabaseService().getDeliveryPartners();
+    final created = riders.firstWhere((r) => r.phone.contains('9876501234'));
+    expect(created.name, 'Anand Verma');
+    expect(created.status, DeliveryPartnerStatus.offline);
+    expect(created.isOffline, isTrue);
+  });
+
+  testWidgets('Admin Panel: AdminDeliveryPartnersPage displays fleet and toggles online/offline status', (WidgetTester tester) async {
+    useSize(tester, const Size(1200, 900));
+
+    // Register a test rider
+    final testRider = await SupabaseService().addDeliveryPartner(
+      name: 'Kiran Rao',
+      phone: '9848012345',
+      vehicleNumber: 'TS 09 XY 9999',
+    );
+    expect(testRider.isOffline, isTrue);
+
+    await tester.pumpWidget(const MaterialApp(home: AdminDeliveryPartnersPage(orders: [])));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Delivery Partners'), findsOneWidget);
+    expect(find.text('Kiran Rao'), findsOneWidget);
+    expect(find.text('TS 09 XY 9999 (BIKE)'), findsOneWidget);
+
+    // Toggle rider from Offline to Online using rider-specific key
+    final switchFinder = find.byKey(ValueKey('switch_${testRider.id}'));
+    await tester.ensureVisible(switchFinder);
+    await tester.tap(switchFinder);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+
+    final updatedRider = (await SupabaseService().getDeliveryPartners()).firstWhere((r) => r.id == testRider.id);
+    expect(updatedRider.status, DeliveryPartnerStatus.online);
+    expect(updatedRider.isOnline, isTrue);
+    expect(updatedRider.isAvailableForAssignment, isTrue);
+  });
+
+  testWidgets('Admin Panel: AssignRiderDialog enforces that only online available riders can be assigned', (WidgetTester tester) async {
+    useSize(tester, const Size(1200, 900));
+
+    // 1. Create an order to assign
+    final unassignedOrder = OrderModel(
+      id: 'order-to-assign-1',
+      orderNumber: '#QB-554433',
+      userId: 'cust-assign',
+      items: [],
+      itemTotal: 400.0,
+      grandTotal: 400.0,
+      status: OrderStatus.packing,
+    );
+    SupabaseService().seedOrder(unassignedOrder);
+
+    // 2. Ensure an offline rider exists
+    final offlineRider = await SupabaseService().addDeliveryPartner(
+      name: 'Offline Partner',
+      phone: '9900112233',
+      vehicleNumber: 'TS 10 ZZ 1111',
+    );
+    expect(offlineRider.isOffline, isTrue);
+
+    // 3. Ensure an online rider exists
+    final onlineRider = await SupabaseService().addDeliveryPartner(
+      name: 'Online Partner',
+      phone: '9900112244',
+      vehicleNumber: 'TS 10 ZZ 2222',
+    );
+    await SupabaseService().updateDeliveryPartnerStatus(onlineRider.id, DeliveryPartnerStatus.online);
+
+    await tester.pumpWidget(MaterialApp(
+      home: Scaffold(
+        body: Center(child: AssignRiderDialog(order: unassignedOrder)),
+      ),
+    ));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Assign Delivery Partner'), findsOneWidget);
+    expect(find.text('#QB-554433'), findsOneWidget);
+
+    // The online partner should show 'Available'
+    expect(find.text('Available'), findsWidgets);
+
+    // Tap on the online rider using exact rider select key
+    final riderKeyFinder = find.byKey(ValueKey('rider_select_${onlineRider.id}'));
+    await tester.ensureVisible(riderKeyFinder);
+    await tester.tap(riderKeyFinder);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+
+    // Confirm assignment
+    final confirmFinder = find.text('Confirm Assignment');
+    await tester.ensureVisible(confirmFinder);
+    await tester.tap(confirmFinder);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 200));
+
+    // Verify order was transitioned and rider was assigned
+    final orderAfter = SupabaseService().getOrderById('order-to-assign-1');
+    expect(orderAfter?.riderId, onlineRider.id);
+    expect(orderAfter?.riderName, 'Online Partner');
+    expect(orderAfter?.status, OrderStatus.partnerAssigned);
+    expect(orderAfter?.deliveryStage, 'assigned');
+
+    // Verify rider is now busy with this active order
+    final riderAfter = (await SupabaseService().getDeliveryPartners()).firstWhere((r) => r.id == onlineRider.id);
+    expect(riderAfter.status, DeliveryPartnerStatus.busy);
+    expect(riderAfter.activeOrderId, 'order-to-assign-1');
+    expect(riderAfter.isAvailableForAssignment, isFalse);
   });
 }

@@ -7,6 +7,7 @@ import '../../../services/mock_data_service.dart';
 import '../../../services/supabase_service.dart';
 import '../../../shared_widgets/qb_ui.dart';
 import '../pages/admin_customers_page.dart';
+import '../pages/admin_delivery_partners_page.dart';
 import '../pages/admin_orders_board.dart';
 import '../pages/admin_overview_page.dart';
 import '../pages/admin_products_page.dart';
@@ -416,6 +417,11 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
               _section = AdminSection.orders;
             });
           },
+        );
+      case AdminSection.deliveryPartners:
+        return AdminDeliveryPartnersPage(
+          orders: _orders,
+          onOpenOrder: _openOrderDetails,
         );
       case AdminSection.settings:
         return AdminSettingsPage(

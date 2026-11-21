@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import '../../../core/constants/app_colors.dart';
 import '../../../models/order_model.dart';
 import '../../../services/supabase_service.dart';
+import 'assign_rider_dialog.dart';
 
 /// Professional Dark Store Order Fulfillment & Fast-Picking Dialog
 class AdminOrderDetailsDialog extends StatefulWidget {
@@ -259,6 +260,11 @@ class _AdminOrderDetailsDialogState extends State<AdminOrderDetailsDialog> {
                   children: [
                     // Delivery Destination & Customer Info
                     _buildCustomerDestinationCard(),
+
+                    const SizedBox(height: 12),
+
+                    // Delivery Partner Assignment Card
+                    _buildDeliveryPartnerCard(),
 
                     const SizedBox(height: 16),
 
@@ -606,6 +612,115 @@ class _AdminOrderDetailsDialogState extends State<AdminOrderDetailsDialog> {
     );
   }
 
+  Widget _buildDeliveryPartnerCard() {
+    final hasRider = _order.riderId != null || (_order.riderName != null && _order.riderName!.isNotEmpty);
+    final isDelivered = _order.status == OrderStatus.delivered;
+    final isCancelled = _order.status == OrderStatus.cancelled;
+
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: hasRider ? const Color(0xFFF1F8E9) : const Color(0xFFF8F9FA),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: hasRider ? const Color(0xFFA5D6A7) : const Color(0xFFE5E7EB)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Row(
+                children: [
+                  Icon(
+                    Icons.two_wheeler_rounded,
+                    size: 18,
+                    color: hasRider ? const Color(0xFF2E7D32) : AppColors.textSecondary,
+                  ),
+                  const SizedBox(width: 8),
+                  Text(
+                    hasRider ? 'Assigned Delivery Partner' : 'Delivery Partner Assignment',
+                    style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 13),
+                  ),
+                ],
+              ),
+              if (!isDelivered && !isCancelled)
+                TextButton.icon(
+                  onPressed: () async {
+                    final assigned = await AssignRiderDialog.show(context, order: _order);
+                    if (assigned == true) {
+                      final fresh = SupabaseService().getOrderById(_order.id) ?? SupabaseService().getOrderById(_order.orderNumber);
+                      if (fresh != null && mounted) {
+                        setState(() => _order = fresh);
+                        widget.onOrderUpdated();
+                      }
+                    }
+                  },
+                  icon: Icon(hasRider ? Icons.swap_horiz_rounded : Icons.person_add_rounded, size: 14),
+                  label: Text(hasRider ? 'Reassign' : 'Assign Rider', style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w800)),
+                  style: TextButton.styleFrom(
+                    foregroundColor: hasRider ? const Color(0xFF2E7D32) : AppColors.primary,
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                    minimumSize: Size.zero,
+                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  ),
+                ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          if (hasRider) ...[
+            Row(
+              children: [
+                CircleAvatar(
+                  radius: 14,
+                  backgroundColor: const Color(0xFFC8E6C9),
+                  child: Text(
+                    _order.riderName?.isNotEmpty == true ? _order.riderName![0].toUpperCase() : 'R',
+                    style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w800, color: Color(0xFF1B5E20)),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        _order.riderName ?? 'Delivery Partner',
+                        style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppColors.textPrimary),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        '${_order.riderPhone ?? ""} · ${_order.riderVehicleNumber ?? ""}',
+                        style: const TextStyle(fontSize: 11, color: AppColors.textSecondary),
+                      ),
+                    ],
+                  ),
+                ),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFE8F5E9),
+                    borderRadius: BorderRadius.circular(6),
+                    border: Border.all(color: const Color(0xFFA5D6A7)),
+                  ),
+                  child: Text(
+                    (_order.deliveryStage ?? 'assigned').toUpperCase(),
+                    style: const TextStyle(fontSize: 10, fontWeight: FontWeight.w800, color: Color(0xFF2E7D32)),
+                  ),
+                ),
+              ],
+            ),
+          ] else ...[
+            const Text(
+              'No delivery partner assigned yet. Assign an online rider to handle doorstep delivery.',
+              style: TextStyle(fontSize: 12, color: AppColors.textSecondary),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
   Widget _buildBottomActionBar() {
     final status = _order.status;
 
@@ -662,6 +777,20 @@ class _AdminOrderDetailsDialogState extends State<AdminOrderDetailsDialog> {
                 onPressed: _isUpdating ? null : () => _updateStatus(OrderStatus.outForDelivery),
                 icon: const Icon(Icons.delivery_dining_rounded, size: 20),
                 label: const Text('Handover to Rider & Dispatch', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 14)),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFFE65100),
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(vertical: 14),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                ),
+              ),
+            ),
+          ] else if (status == OrderStatus.partnerAssigned) ...[
+            Expanded(
+              child: ElevatedButton.icon(
+                onPressed: _isUpdating ? null : () => _updateStatus(OrderStatus.outForDelivery),
+                icon: const Icon(Icons.delivery_dining_rounded, size: 20),
+                label: const Text('Dispatch to Customer (Out for Delivery)', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 14)),
                 style: ElevatedButton.styleFrom(
                   backgroundColor: const Color(0xFFE65100),
                   foregroundColor: Colors.white,
