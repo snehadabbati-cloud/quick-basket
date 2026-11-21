@@ -2506,7 +2506,6 @@ class SupabaseService {
   Future<void> _persistCustomRiders() async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      await prefs.reload();
       final ridersJson = _localRiders.map((r) => r.toJson()).toList();
       await prefs.setString('qb_delivery_partners_json', jsonEncode(ridersJson));
       for (final r in _localRiders) {
@@ -2525,7 +2524,6 @@ class SupabaseService {
   Future<void> _loadCustomRidersFromPrefs() async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      await prefs.reload();
       final raw = prefs.getString('qb_delivery_partners_json');
       if (raw != null && raw.isNotEmpty) {
         final List<dynamic> list = jsonDecode(raw);
@@ -2555,8 +2553,8 @@ class SupabaseService {
   Future<List<DeliveryPartnerModel>> getDeliveryPartners() async {
     if (_localRiders.isEmpty) {
       _localRiders.addAll(TestRiderFixtures.defaultTestRiders);
+      await _loadCustomRidersFromPrefs();
     }
-    await _loadCustomRidersFromPrefs();
 
     if (!_isInitialized) {
       return List<DeliveryPartnerModel>.from(_localRiders);
@@ -2988,6 +2986,7 @@ class SupabaseService {
 
     // 6. OTP Correct! Transition order to delivered
     final now = DateTime.now();
+    await updateOrderStatus(order.id, OrderStatus.delivered);
     final orderIdx = _localOrders.indexWhere((o) => o.id == order.id || o.orderNumber == order.orderNumber);
     if (orderIdx != -1) {
       _localOrders[orderIdx] = _localOrders[orderIdx].copyWith(

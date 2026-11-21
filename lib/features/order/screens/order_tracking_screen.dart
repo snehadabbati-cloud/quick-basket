@@ -261,18 +261,29 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen> {
   List<(String, String)> get _steps {
     final t = _activeOrder.createdAt;
     final eta = t.add(Duration(minutes: _activeOrder.estimatedDeliveryMinutes));
+    final packingSubtitle = _currentStatus == OrderStatus.partnerAssigned && _activeOrder.riderName != null
+        ? 'Partner ${_activeOrder.riderName} assigned'
+        : qbTime(t.add(const Duration(minutes: 2)));
+    final outSubtitle = _activeOrder.riderName != null
+        ? '${qbTime(t.add(const Duration(minutes: 5)))} · ${_activeOrder.riderName} on route'
+        : '${qbTime(t.add(const Duration(minutes: 5)))} · Rider on route';
     return [
       ('Order Placed', qbTime(t)),
       ('Order Confirmed', qbTime(t)),
-      ('Packing at Dark Store', qbTime(t.add(const Duration(minutes: 2)))),
-      ('Out for Delivery', '${qbTime(t.add(const Duration(minutes: 5)))} · Rider on route'),
+      ('Packing at Dark Store', packingSubtitle),
+      ('Out for Delivery', outSubtitle),
       ('Delivered', _isDelivered ? 'Delivered' : 'Expected by ${qbTime(eta)}'),
     ];
   }
 
   void _callRider() {
+    final name = _activeOrder.riderName ?? 'Delivery Partner';
+    final phone = _activeOrder.riderPhone ?? '+91 98765 43210';
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Calling delivery partner Ramesh Kumar...')),
+      SnackBar(
+        content: Text('Calling delivery partner $name ($phone)...'),
+        behavior: SnackBarBehavior.floating,
+      ),
     );
   }
 
@@ -395,7 +406,7 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen> {
                     ],
                   ),
                 ),
-                const SizedBox(height: 210, child: _RouteMap()),
+                SizedBox(height: 210, child: _RouteMap(riderName: _activeOrder.riderName)),
                 Transform.translate(
                   offset: const Offset(0, -18),
                   child: Padding(
@@ -506,6 +517,33 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen> {
   }
 
   Widget _riderCard({bool shadow = false}) {
+    final hasRider = _activeOrder.riderName != null && _activeOrder.riderName!.trim().isNotEmpty;
+    final riderName = hasRider ? _activeOrder.riderName! : 'Assigning Delivery Partner...';
+    final riderInitials = hasRider
+        ? riderName.trim().split(' ').map((p) => p.isNotEmpty ? p[0].toUpperCase() : '').take(2).join()
+        : 'DP';
+    final riderVehicle = _activeOrder.riderVehicleNumber ?? 'Vehicle';
+
+    String subtitle;
+    if (!hasRider) {
+      subtitle = 'Dark store is dispatching the nearest partner';
+    } else {
+      switch (_activeOrder.deliveryStage) {
+        case 'out_for_delivery':
+          subtitle = 'On the way to your doorstep · $riderVehicle';
+          break;
+        case 'picked_up':
+        case 'reached_store':
+          subtitle = 'Order picked up at dark store · $riderVehicle';
+          break;
+        case 'accepted':
+        case 'assigned':
+        default:
+          subtitle = 'Partner assigned · $riderVehicle';
+          break;
+      }
+    }
+
     return Container(
       padding: const EdgeInsets.all(14),
       decoration: qbCard(shadow: shadow),
@@ -514,30 +552,46 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen> {
           Container(
             width: 48,
             height: 48,
-            decoration: const BoxDecoration(color: Color(0xFFFFF4D1), shape: BoxShape.circle),
+            decoration: BoxDecoration(
+              color: hasRider ? const Color(0xFFFFF4D1) : const Color(0xFFE8F5E9),
+              shape: BoxShape.circle,
+            ),
             alignment: Alignment.center,
-            child: const Text('RK', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800, color: Color(0xFF946200))),
+            child: hasRider
+                ? Text(riderInitials, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w800, color: Color(0xFF946200)))
+                : const Icon(Icons.two_wheeler_rounded, color: Color(0xFF0C8340), size: 24),
           ),
           const SizedBox(width: 12),
-          const Expanded(
+          Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text('Ramesh Kumar', style: TextStyle(fontSize: 15, fontWeight: FontWeight.w800)),
-                SizedBox(height: 2),
-                Text('Your delivery partner · KA 01 AB 2345', style: TextStyle(fontSize: 12, color: AppColors.textSecondary)),
+                Text(
+                  riderName,
+                  style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w800),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  subtitle,
+                  style: const TextStyle(fontSize: 12, color: AppColors.textSecondary),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
               ],
             ),
           ),
-          Material(
-            color: AppColors.primaryLight,
-            shape: const CircleBorder(),
-            child: IconButton(
-              tooltip: 'Call delivery partner',
-              onPressed: _callRider,
-              icon: const Icon(Icons.call_outlined, color: AppColors.primary),
+          if (hasRider)
+            Material(
+              color: AppColors.primaryLight,
+              shape: const CircleBorder(),
+              child: IconButton(
+                tooltip: 'Call delivery partner',
+                onPressed: _callRider,
+                icon: const Icon(Icons.call_outlined, color: AppColors.primary),
+              ),
             ),
-          ),
         ],
       ),
     );
@@ -871,7 +925,7 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen> {
                                   height: 520,
                                   decoration: qbCard(radius: 22),
                                   clipBehavior: Clip.antiAlias,
-                                  child: const _RouteMap(large: true),
+                                  child: _RouteMap(large: true, riderName: _activeOrder.riderName),
                                 ),
                               ),
                               const SizedBox(width: 20),
@@ -973,7 +1027,8 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen> {
 /// Stylised route map: streets, blocks, dark store, rider and home pins.
 class _RouteMap extends StatelessWidget {
   final bool large;
-  const _RouteMap({this.large = false});
+  final String? riderName;
+  const _RouteMap({this.large = false, this.riderName});
 
   @override
   Widget build(BuildContext context) {
@@ -1053,12 +1108,12 @@ class _RouteMap extends StatelessWidget {
                       borderRadius: BorderRadius.circular(12),
                       boxShadow: const [BoxShadow(color: Colors.black12, blurRadius: 12, offset: Offset(0, 4))],
                     ),
-                    child: const Text.rich(
+                    child: Text.rich(
                       TextSpan(children: [
-                        TextSpan(text: 'Rider on the way', style: TextStyle(fontWeight: FontWeight.w800)),
-                        TextSpan(text: ' · Ramesh is heading to you'),
+                        const TextSpan(text: 'Rider on the way', style: TextStyle(fontWeight: FontWeight.w800)),
+                        TextSpan(text: ' · ${riderName ?? "Delivery partner"} is heading to you'),
                       ]),
-                      style: TextStyle(fontSize: 13),
+                      style: const TextStyle(fontSize: 13),
                     ),
                   ),
                 ),
