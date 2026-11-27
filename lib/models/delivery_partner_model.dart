@@ -147,6 +147,9 @@ class DeliveryPartnerModel {
     String? activeOrderId,
     DateTime? createdAt,
     DateTime? updatedAt,
+    /// Pass true to explicitly clear [activeOrderId] (`null` alone is ignored
+    /// by the `??` fallback below).
+    bool clearActiveOrder = false,
   }) {
     return DeliveryPartnerModel(
       id: id ?? this.id,
@@ -161,7 +164,7 @@ class DeliveryPartnerModel {
       currentLongitude: currentLongitude ?? this.currentLongitude,
       rating: rating ?? this.rating,
       totalDeliveries: totalDeliveries ?? this.totalDeliveries,
-      activeOrderId: activeOrderId ?? this.activeOrderId,
+      activeOrderId: clearActiveOrder ? activeOrderId : (activeOrderId ?? this.activeOrderId),
       createdAt: createdAt ?? this.createdAt,
       updatedAt: updatedAt ?? this.updatedAt,
     );

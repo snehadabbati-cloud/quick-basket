@@ -35,4 +35,19 @@ class DeliveryConfig {
 
   /// OTP expiration duration from order creation
   static const Duration otpExpiryDuration = Duration(hours: 2);
+
+  /// Time a rider has to accept a new delivery request before it is
+  /// automatically declined and returned to the store pool.
+  static const Duration requestResponseWindow = Duration(seconds: 30);
+
+  /// Grace period on top of the promised ETA for a delivery to count as on-time.
+  static const Duration onTimeGrace = Duration(minutes: 10);
+
+  /// Dark store support line shown to riders. Empty = not configured (the app
+  /// says so instead of dialling a placeholder number).
+  static const String storeSupportPhone = String.fromEnvironment('STORE_SUPPORT_PHONE', defaultValue: '');
+
+  /// DEBUG BUILDS ONLY: login code for the built-in test riders
+  /// (TestRiderFixtures), whose phone numbers are fictional — no SMS is sent.
+  static const String debugTestRiderOtp = '123456';
 }

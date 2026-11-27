@@ -196,6 +196,7 @@ class OrderModel {
       deliveryFee: (json['delivery_fee'] as num?)?.toDouble() ?? 0.0,
       packagingFee: (json['taxes'] as num?)?.toDouble() ?? 5.0,
       grandTotal: (json['grand_total'] as num?)?.toDouble() ?? 0.0,
+      tipAmount: (json['tip_amount'] as num?)?.toDouble() ?? 0.0,
       paymentMethod: json['payment_method'] as String? ?? 'cod',
       paymentStatus: json['payment_status'] as String? ?? 'pending',
       status: OrderStatusExtension.fromString(json['order_status'] as String? ?? 'placed'),
@@ -232,6 +233,7 @@ class OrderModel {
       'delivery_fee': deliveryFee,
       'taxes': packagingFee,
       'grand_total': grandTotal,
+      'tip_amount': tipAmount, // local persistence only (no DB column); keeps rider tip earnings across tabs
       'payment_method': paymentMethod,
       'payment_status': paymentStatus,
       'order_status': status.value,
@@ -290,7 +292,12 @@ class OrderModel {
     DateTime? deliveredAt,
     int? otpAttempts,
     DateTime? otpExpiresAt,
+    /// `copyWith` cannot set a field to null via `??`. Pass true to explicitly
+    /// clear the rider assignment (riderId/name/phone/vehicle, stage, assignedAt,
+    /// pickedUpAt) — e.g. when a rider declines a request.
+    bool clearRiderAssignment = false,
   }) {
+    final clear = clearRiderAssignment;
     return OrderModel(
       id: id ?? this.id,
       orderNumber: orderNumber ?? this.orderNumber,
@@ -315,13 +322,13 @@ class OrderModel {
       refundStatus: refundStatus ?? this.refundStatus,
       createdAt: createdAt ?? this.createdAt,
       estimatedDeliveryMinutes: estimatedDeliveryMinutes ?? this.estimatedDeliveryMinutes,
-      riderId: riderId ?? this.riderId,
-      riderName: riderName ?? this.riderName,
-      riderPhone: riderPhone ?? this.riderPhone,
-      riderVehicleNumber: riderVehicleNumber ?? this.riderVehicleNumber,
-      deliveryStage: deliveryStage ?? this.deliveryStage,
-      assignedAt: assignedAt ?? this.assignedAt,
-      pickedUpAt: pickedUpAt ?? this.pickedUpAt,
+      riderId: clear ? riderId : (riderId ?? this.riderId),
+      riderName: clear ? riderName : (riderName ?? this.riderName),
+      riderPhone: clear ? riderPhone : (riderPhone ?? this.riderPhone),
+      riderVehicleNumber: clear ? riderVehicleNumber : (riderVehicleNumber ?? this.riderVehicleNumber),
+      deliveryStage: clear ? deliveryStage : (deliveryStage ?? this.deliveryStage),
+      assignedAt: clear ? assignedAt : (assignedAt ?? this.assignedAt),
+      pickedUpAt: clear ? pickedUpAt : (pickedUpAt ?? this.pickedUpAt),
       deliveredAt: deliveredAt ?? this.deliveredAt,
       otpAttempts: otpAttempts ?? this.otpAttempts,
       otpExpiresAt: otpExpiresAt ?? this.otpExpiresAt,

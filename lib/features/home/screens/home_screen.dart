@@ -120,8 +120,6 @@ class _HomeScreenState extends State<HomeScreen> {
         SupabaseService().checkStockOverridesChanged();
         if (_currentNavIndex == 3) {
           _loadUserOrders(silent: true);
-        } else if (_currentNavIndex == 0 || _currentNavIndex == 1) {
-          _loadCategories(silent: true);
         }
       }
     });

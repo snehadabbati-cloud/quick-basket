@@ -14,6 +14,7 @@ import '../pages/admin_products_page.dart';
 import '../pages/admin_reports_page.dart';
 import '../pages/admin_settings_page.dart';
 import '../widgets/admin_order_details_dialog.dart';
+import '../widgets/assign_rider_dialog.dart';
 import '../widgets/admin_orders_logic.dart';
 import '../widgets/admin_sidebar.dart';
 import '../widgets/admin_ui.dart';
@@ -157,14 +158,25 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
     _fetchOrders(silent: true);
   }
 
+  /// Primary action on an order card. The store accepts and packs; then it
+  /// assigns a rider, and the rider's app drives pickup and OTP delivery.
   Future<void> _advanceOrder(OrderModel order) async {
-    final next = OrderFlow.next(order.status);
-    if (next == null) return;
-    if (next == OrderStatus.delivered) {
-      final ok = await showDeliveryOtpDialog(context, order);
-      if (!ok) return;
+    switch (OrderFlow.step(order)) {
+      case AdminStep.accept:
+        await _setStatus(order, OrderStatus.confirmed);
+      case AdminStep.startPacking:
+        await _setStatus(order, OrderStatus.packing);
+      case AdminStep.assignRider:
+      case AdminStep.resolveIssue:
+        final assigned = await AssignRiderDialog.show(context, order: order);
+        if (assigned == true && mounted) {
+          setState(() => _lastAction = null); // assignment isn't a status undo
+          _fetchOrders(silent: true);
+        }
+      case AdminStep.trackRider:
+      case AdminStep.none:
+        _openOrderDetails(order);
     }
-    await _setStatus(order, next);
   }
 
   Future<void> _rejectOrder(OrderModel order) => _setStatus(

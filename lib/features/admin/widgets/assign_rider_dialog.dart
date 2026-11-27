@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import '../../../core/constants/app_colors.dart';
 import '../../../core/config/delivery_config.dart';
@@ -46,10 +47,22 @@ class _AssignRiderDialogState extends State<AssignRiderDialog> {
   bool _isLoading = true;
   bool _isSubmitting = false;
 
+  Timer? _refresh;
+  String? _lastSig;
+
   @override
   void initState() {
     super.initState();
     _loadData();
+    // Riders switch on duty from their own app (often another device/tab);
+    // refresh availability while the dialog is open.
+    _refresh = Timer.periodic(const Duration(seconds: 2), (_) => _loadData());
+  }
+
+  @override
+  void dispose() {
+    _refresh?.cancel();
+    super.dispose();
   }
 
   Future<void> _loadData() async {
@@ -58,26 +71,38 @@ class _AssignRiderDialogState extends State<AssignRiderDialog> {
         ? [widget.order!]
         : SupabaseService().ordersNotifier.value;
 
-    // Orders eligible for assignment: placed, confirmed, packing (and without assigned rider or stage assigned)
+    // Orders eligible for assignment: accepted by the store (confirmed / packing /
+    // rider assigned), or out for delivery without a rider. New (placed) orders
+    // must be accepted first; delivered / cancelled orders are final.
     final eligible = allOrders.where((o) {
-      if (o.status == OrderStatus.delivered || o.status == OrderStatus.cancelled) return false;
-      return o.riderId == null || o.status != OrderStatus.outForDelivery;
+      if (o.status == OrderStatus.placed || o.status == OrderStatus.delivered || o.status == OrderStatus.cancelled) return false;
+      return o.riderId == null || o.status != OrderStatus.outForDelivery || o.deliveryStage == 'issue_reported';
     }).toList();
 
+    // When reassigning, the current rider isn't an option.
+    final currentRiderId = widget.order?.riderId;
+
     // Sort so available online riders appear at the top for instant assignment
-    final sortedRiders = List<DeliveryPartnerModel>.from(riders)
+    final sortedRiders = riders.where((r) => r.id != currentRiderId).toList()
       ..sort((a, b) {
         if (a.isAvailableForAssignment && !b.isAvailableForAssignment) return -1;
         if (!a.isAvailableForAssignment && b.isAvailableForAssignment) return 1;
         return a.name.compareTo(b.name);
       });
 
+    final sig = [
+      for (final r in sortedRiders) '${r.id}:${r.status.value}:${r.activeOrderId}',
+      for (final o in eligible) o.id,
+    ].join('|');
+    if (!_isLoading && sig == _lastSig) return; // nothing changed: no rebuild
+    _lastSig = sig;
+
     if (mounted) {
       setState(() {
         _riders = sortedRiders;
         _eligibleOrders = eligible;
-        _selectedRiderId = widget.preselectedRider?.id;
-        _selectedOrderId = widget.order?.id;
+        _selectedRiderId ??= widget.preselectedRider?.id;
+        _selectedOrderId ??= widget.order?.id;
         _isLoading = false;
       });
     }
@@ -285,6 +310,18 @@ class _AssignRiderDialogState extends State<AssignRiderDialog> {
                       style: TextStyle(fontSize: 12, color: AppColors.textSecondary),
                     ),
                     const SizedBox(height: 8),
+                    if (_riders.isNotEmpty && !_riders.any((r) => r.isAvailableForAssignment)) ...[
+                      Container(
+                        key: const ValueKey('no_riders_online'),
+                        padding: const EdgeInsets.all(10),
+                        decoration: BoxDecoration(color: AppColors.accentLight, borderRadius: BorderRadius.circular(10)),
+                        child: const Text(
+                          'No riders are online right now. Ask a rider to log in to the Delivery Partner app and switch on duty — they will appear here instantly.',
+                          style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppColors.accentInk),
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                    ],
 
                     Expanded(
                       child: _riders.isEmpty

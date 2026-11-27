@@ -1,208 +1,231 @@
 import 'package:flutter/material.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:flutter/services.dart';
+import '../../../core/config/delivery_config.dart';
 import '../../../core/constants/app_colors.dart';
-import '../../../models/delivery_partner_model.dart';
-import '../../../services/supabase_service.dart';
-import 'rider_dashboard_screen.dart';
+import '../../../shared_widgets/qb_ui.dart';
+import '../controllers/rider_session.dart';
+import '../widgets/rider_ui.dart';
+import 'rider_otp_screen.dart';
+import 'rider_shell.dart';
 
-/// Screen for selecting and logging in as an active Delivery Partner.
+/// Route helper: every rider page is shown at phone width on wide screens.
+Route<T> riderRoute<T>(Widget page) => MaterialPageRoute<T>(builder: (_) => RiderFrame(child: page));
+
+/// 1.1 Rider Login — registered mobile number → Supabase phone OTP.
+/// Restores an existing session automatically.
 class RiderLoginScreen extends StatefulWidget {
-  const RiderLoginScreen({super.key});
+  /// Set false in tests to skip automatic session restore.
+  final bool autoRestore;
+  const RiderLoginScreen({super.key, this.autoRestore = true});
 
   @override
   State<RiderLoginScreen> createState() => _RiderLoginScreenState();
 }
 
 class _RiderLoginScreenState extends State<RiderLoginScreen> {
-  List<DeliveryPartnerModel> _riders = [];
-  bool _isLoading = true;
+  final _ctrl = TextEditingController();
+  bool _restoring = true;
+  bool _sending = false;
+  String? _error;
 
   @override
   void initState() {
     super.initState();
-    _loadRiders();
-  }
-
-  Future<void> _loadRiders() async {
-    final list = await SupabaseService().getDeliveryPartners();
-    if (mounted) {
-      setState(() {
-        _riders = list;
-        _isLoading = false;
-      });
+    if (widget.autoRestore) {
+      _tryRestore();
+    } else {
+      _restoring = false;
     }
   }
 
-  Future<void> _selectRider(DeliveryPartnerModel rider) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('active_rider_id', rider.id);
+  Future<void> _tryRestore() async {
+    final ok = await RiderSession().restore();
+    if (!mounted) return;
+    if (ok) {
+      Navigator.of(context).pushReplacement(riderRoute(const RiderShell()));
+    } else {
+      setState(() => _restoring = false);
+    }
+  }
 
-    if (mounted) {
-      Navigator.of(context).pushReplacement(
-        MaterialPageRoute(
-          builder: (_) => RiderDashboardScreen(rider: rider),
-        ),
-      );
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _sendOtp() async {
+    setState(() {
+      _sending = true;
+      _error = null;
+    });
+    try {
+      final req = await RiderSession().requestOtp(_ctrl.text);
+      if (!mounted) return;
+      setState(() => _sending = false);
+      Navigator.of(context).push(riderRoute(RiderOtpScreen(request: req)));
+    } on RiderException catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _sending = false;
+        _error = e.message;
+      });
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: const Color(0xFFF8F9FA),
-      appBar: AppBar(
+    if (_restoring) {
+      return const RiderFrame(
+        child: Scaffold(body: Center(child: CircularProgressIndicator(color: AppColors.primary))),
+      );
+    }
+    return RiderFrame(
+      child: Scaffold(
         backgroundColor: Colors.white,
-        elevation: 0,
-        title: const Row(
-          children: [
-            Icon(Icons.two_wheeler_rounded, color: Color(0xFF0C8340), size: 24),
-            SizedBox(width: 8),
-            Text(
-              'Rider Partner Login',
-              style: TextStyle(fontWeight: FontWeight.w800, color: AppColors.textPrimary, fontSize: 18),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pushReplacementNamed('/'),
-            child: const Text('Customer App', style: TextStyle(fontWeight: FontWeight.w700, color: AppColors.primaryDeep)),
-          ),
-        ],
-      ),
-      body: _isLoading
-          ? const Center(child: CircularProgressIndicator(color: AppColors.primary))
-          : SingleChildScrollView(
-              padding: const EdgeInsets.all(24),
-              child: Center(
-                child: ConstrainedBox(
-                  constraints: const BoxConstraints(maxWidth: 500),
+        body: SafeArea(
+          child: Column(
+            children: [
+              Expanded(
+                child: SingleChildScrollView(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      // Banner Card
                       Container(
-                        padding: const EdgeInsets.all(20),
-                        decoration: BoxDecoration(
-                          gradient: const LinearGradient(
-                            colors: [Color(0xFF0C8340), Color(0xFF064E26)],
+                        width: double.infinity,
+                        padding: const EdgeInsets.fromLTRB(24, 20, 24, 30),
+                        decoration: const BoxDecoration(
+                          gradient: LinearGradient(
+                            colors: [AppColors.primary, AppColors.primaryDark],
                             begin: Alignment.topLeft,
                             end: Alignment.bottomRight,
                           ),
-                          borderRadius: BorderRadius.circular(20),
+                          borderRadius: BorderRadius.vertical(bottom: Radius.circular(28)),
                         ),
-                        child: const Column(
+                        child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Text(
-                              'Quick Basket Delivery Fleet',
-                              style: TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.w900),
+                            Row(
+                              children: [
+                                const Expanded(child: QbLogo(size: 38, textColor: Colors.white)),
+                                TextButton(
+                                  onPressed: () => Navigator.of(context).pushReplacementNamed('/'),
+                                  child: const Text('Customer app', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700)),
+                                ),
+                              ],
                             ),
-                            SizedBox(height: 6),
-                            Text(
-                              'Select your profile to start receiving order assignments, view doorstep routes, and verify customer OTPs.',
-                              style: TextStyle(color: Color(0xFFE8F5E9), fontSize: 13, height: 1.4),
+                            const SizedBox(height: 4),
+                            const Padding(
+                              padding: EdgeInsets.only(left: 2),
+                              child: QbPill(
+                                label: 'DELIVERY PARTNER',
+                                background: AppColors.accent,
+                                foreground: AppColors.primaryDark,
+                                fontSize: 10,
+                              ),
+                            ),
+                            const SizedBox(height: 24),
+                            Center(
+                              child: Container(
+                                width: 110,
+                                height: 110,
+                                decoration: BoxDecoration(color: Colors.white.withValues(alpha: 0.12), shape: BoxShape.circle),
+                                child: const Icon(Icons.delivery_dining_rounded, size: 66, color: AppColors.accent),
+                              ),
+                            ),
+                            const SizedBox(height: 22),
+                            const Text(
+                              'Deliver happiness\nin minutes.',
+                              style: TextStyle(color: Colors.white, fontSize: 26, fontWeight: FontWeight.w900, height: 1.15, letterSpacing: -0.5),
+                            ),
+                            const SizedBox(height: 8),
+                            const Text(
+                              'Log in with your registered mobile number to start your shift.',
+                              style: TextStyle(color: Color(0xFFCFEBD9), fontSize: 13.5, height: 1.4),
                             ),
                           ],
                         ),
                       ),
-                      const SizedBox(height: 24),
-
-                      const Text(
-                        'Select Your Rider Profile',
-                        style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800, color: AppColors.textPrimary),
-                      ),
-                      const SizedBox(height: 12),
-
-                      if (_riders.isEmpty)
-                        Container(
-                          padding: const EdgeInsets.all(30),
-                          decoration: BoxDecoration(
-                            color: Colors.white,
-                            borderRadius: BorderRadius.circular(16),
-                            border: Border.all(color: AppColors.border),
-                          ),
-                          child: const Center(
-                            child: Text(
-                              'No registered delivery partners found. Please add riders via the Admin Dashboard.',
-                              textAlign: TextAlign.center,
-                              style: TextStyle(color: AppColors.textSecondary),
+                      Padding(
+                        padding: const EdgeInsets.all(24),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text('Mobile number', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 14)),
+                            const SizedBox(height: 8),
+                            Container(
+                              decoration: qbCard(borderColor: _error != null ? AppColors.error : AppColors.borderStrong, radius: 14),
+                              padding: const EdgeInsets.symmetric(horizontal: 14),
+                              child: Row(
+                                children: [
+                                  const Text('+91', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 15)),
+                                  Container(width: 1, height: 26, color: AppColors.border, margin: const EdgeInsets.symmetric(horizontal: 12)),
+                                  Expanded(
+                                    child: TextField(
+                                      key: const ValueKey('rider_phone_field'),
+                                      controller: _ctrl,
+                                      keyboardType: TextInputType.phone,
+                                      autofocus: true,
+                                      inputFormatters: [FilteringTextInputFormatter.digitsOnly, LengthLimitingTextInputFormatter(10)],
+                                      onSubmitted: (_) => _sendOtp(),
+                                      style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700, letterSpacing: 1),
+                                      decoration: const InputDecoration(
+                                        border: InputBorder.none,
+                                        enabledBorder: InputBorder.none,
+                                        focusedBorder: InputBorder.none,
+                                        filled: false,
+                                        hintText: '10-digit number',
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
                             ),
-                          ),
-                        )
-                      else
-                        ListView.separated(
-                          shrinkWrap: true,
-                          physics: const NeverScrollableScrollPhysics(),
-                          itemCount: _riders.length,
-                          separatorBuilder: (_, __) => const SizedBox(height: 10),
-                          itemBuilder: (context, index) {
-                            final rider = _riders[index];
-                            return InkWell(
-                              onTap: () => _selectRider(rider),
-                              borderRadius: BorderRadius.circular(16),
-                              child: Container(
-                                padding: const EdgeInsets.all(16),
-                                decoration: BoxDecoration(
-                                  color: Colors.white,
-                                  borderRadius: BorderRadius.circular(16),
-                                  border: Border.all(color: AppColors.border),
-                                ),
-                                child: Row(
-                                  children: [
-                                    CircleAvatar(
-                                      radius: 22,
-                                      backgroundColor: const Color(0xFFE8F5E9),
-                                      child: Text(
-                                        rider.name.isNotEmpty ? rider.name[0].toUpperCase() : 'R',
-                                        style: const TextStyle(fontWeight: FontWeight.w800, color: Color(0xFF0C8340), fontSize: 16),
-                                      ),
-                                    ),
-                                    const SizedBox(width: 14),
-                                    Expanded(
-                                      child: Column(
-                                        crossAxisAlignment: CrossAxisAlignment.start,
-                                        children: [
-                                          Row(
-                                            children: [
-                                              Text(
-                                                rider.name,
-                                                style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 15, color: AppColors.textPrimary),
-                                              ),
-                                              const SizedBox(width: 8),
-                                              Container(
-                                                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                                                decoration: BoxDecoration(
-                                                  color: const Color(0xFFFFF8E1),
-                                                  borderRadius: BorderRadius.circular(6),
-                                                ),
-                                                child: Text(
-                                                  '⭐ ${rider.rating.toStringAsFixed(1)}',
-                                                  style: const TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: Color(0xFFB78103)),
-                                                ),
-                                              ),
-                                            ],
-                                          ),
-                                          const SizedBox(height: 3),
-                                          Text(
-                                            '${rider.phone} · ${rider.vehicleNumber} (${rider.vehicleType.toUpperCase()})',
-                                            style: const TextStyle(fontSize: 12, color: AppColors.textSecondary),
-                                          ),
-                                        ],
-                                      ),
-                                    ),
-                                    const Icon(Icons.arrow_forward_ios_rounded, size: 16, color: AppColors.textSecondary),
-                                  ],
+                            const SizedBox(height: 10),
+                            if (_error != null)
+                              Text(_error!, style: const TextStyle(fontSize: 12.5, color: AppColors.error, fontWeight: FontWeight.w600))
+                            else
+                              const Row(
+                                children: [
+                                  Icon(Icons.verified_user_outlined, size: 15, color: AppColors.primary),
+                                  SizedBox(width: 6),
+                                  Expanded(
+                                    child: Text('Only partners onboarded by Quick Basket can log in.',
+                                        style: TextStyle(fontSize: 12, color: AppColors.textSecondary)),
+                                  ),
+                                ],
+                              ),
+                            if (RiderSession.testRidersEnabled) ...[
+                              const SizedBox(height: 14),
+                              Container(
+                                padding: const EdgeInsets.all(10),
+                                decoration: BoxDecoration(color: AppColors.infoLight, borderRadius: BorderRadius.circular(10)),
+                                child: const Text(
+                                  'Test mode: built-in test riders (e.g. 98765 43210) skip SMS and use OTP ${DeliveryConfig.debugTestRiderOtp}. '
+                                  'Partners added in the Admin Panel receive a real SMS OTP.',
+                                  style: TextStyle(fontSize: 11.5, color: AppColors.info, height: 1.35),
                                 ),
                               ),
-                            );
-                          },
+                            ],
+                          ],
                         ),
+                      ),
                     ],
                   ),
                 ),
               ),
-            ),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(24, 0, 24, 20),
+                child: RPrimaryButton(
+                  label: _sending ? 'Sending…' : 'Send OTP',
+                  icon: Icons.sms_outlined,
+                  onPressed: _sending ? null : _sendOtp,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }

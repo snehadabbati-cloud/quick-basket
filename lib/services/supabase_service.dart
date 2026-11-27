@@ -457,6 +457,8 @@ class SupabaseService {
   // SUBCATEGORY METHODS (PRD 4.4, 5.4)
   // ==========================================
 
+  bool _hasSubcategoriesTable = true;
+
   /// Fetch subcategories with optional category filtering
   Future<List<SubcategoryModel>> getSubcategories({
     String? categoryId,
@@ -464,7 +466,7 @@ class SupabaseService {
   }) async {
     List<SubcategoryModel> remoteList = [];
 
-    if (_isInitialized) {
+    if (_isInitialized && _hasSubcategoriesTable) {
       try {
         var query = client.from('subcategories').select();
         if (categoryId != null && categoryId.isNotEmpty) {
@@ -477,6 +479,9 @@ class SupabaseService {
         final List<dynamic> data = res as List<dynamic>;
         remoteList = data.map((json) => SubcategoryModel.fromJson(json as Map<String, dynamic>)).toList();
       } catch (e) {
+        if (e.toString().contains('PGRST205') || e.toString().contains('subcategories')) {
+          _hasSubcategoriesTable = false;
+        }
         debugPrint('[SupabaseService] Remote subcategories fetch fallback: $e');
       }
     }
@@ -788,7 +793,7 @@ class SupabaseService {
     List<AddressModel> list = [];
 
     // 1. Try remote Supabase DB if initialized
-    if (_isInitialized) {
+    if (_isInitialized && _isUuid(userId)) {
       try {
         final response = await client
             .from('user_addresses')
@@ -1287,16 +1292,21 @@ class SupabaseService {
     return RegExp(r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$').hasMatch(str.trim());
   }
 
+  // Polling readers (Admin board, Rider app) re-load shared storage every
+  // second. A read that lands while this device is mid-write would load the
+  // *old* copy and clobber the newer in-memory state, so loads are skipped
+  // while a write is in flight (memory is newer and is about to be saved).
+  int _orderWritesInFlight = 0;
+
   Future<void> _persistCustomOrders() async {
+    _orderWritesInFlight++; // synchronous: callers mutate memory right before this
     try {
       final prefs = await SharedPreferences.getInstance();
       await prefs.reload();
-      final customOrders = _localOrders.where((o) =>
-          o.id != 'sample-order-delivered' &&
-          o.id != 'sample-order-active' &&
-          o.orderNumber != '#QB-92014' &&
-          o.orderNumber != '#QB-93108'
-      ).map((o) {
+      // Built-in demo orders are persisted too: they can be assigned to riders,
+      // and rider fields only reach other tabs through this JSON (status alone
+      // syncs via the qb_status_* keys). The loader de-duplicates by id.
+      final customOrders = _localOrders.map((o) {
         final encodedInstructions = _encodeItemsInInstructions(o.deliveryInstructions, o.items);
         return o.copyWith(deliveryInstructions: encodedInstructions).toJson();
       }).toList();
@@ -1342,10 +1352,13 @@ class SupabaseService {
       }
     } catch (e) {
       debugPrint('[SupabaseService] Error persisting custom orders: $e');
+    } finally {
+      _orderWritesInFlight--;
     }
   }
 
   void _loadCustomOrdersFromPrefs(SharedPreferences prefs) {
+    if (_orderWritesInFlight > 0) return; // memory is newer; see _persistCustomOrders
     try {
       final raw = prefs.getString('qb_custom_orders_json');
       if (raw != null && raw.isNotEmpty) {
@@ -1366,6 +1379,14 @@ class SupabaseService {
           if (idx == -1) {
             _localOrders.insert(0, order);
           } else {
+            // A rider declined this order in another tab: the persisted copy
+            // has no rider and a tombstone marks the un-assignment as intended,
+            // so drop the stale rider instead of keeping it via `??` below.
+            if (order.riderId == null &&
+                _localOrders[idx].riderId != null &&
+                prefs.containsKey('$_riderUnassignedKeyPrefix${order.id}')) {
+              _localOrders[idx] = _localOrders[idx].copyWith(clearRiderAssignment: true);
+            }
             _localOrders[idx] = _localOrders[idx].copyWith(
               status: order.status,
               cancelledBy: order.cancelledBy ?? _localOrders[idx].cancelledBy,
@@ -1394,6 +1415,7 @@ class SupabaseService {
   }
 
   OrderModel _syncOrderWithLatestStatus(OrderModel order, SharedPreferences prefs) {
+    if (_orderWritesInFlight > 0) return order; // memory is newer; see _persistCustomOrders
     final cleanNum = order.orderNumber.replaceAll('#', '').trim();
     final savedStatus = prefs.getString('qb_status_${order.id}') ??
         prefs.getString('qb_status_${order.orderNumber}') ??
@@ -2503,9 +2525,25 @@ class SupabaseService {
     ridersNotifier.value = List.unmodifiable(_localRiders);
   }
 
+  int _riderWritesInFlight = 0;
+  int _riderWriteEpoch = 0;
+  bool _testRidersSeeded = false;
+
   Future<void> _persistCustomRiders() async {
+    _riderWritesInFlight++; // synchronous: callers mutate memory right before this
+    _riderWriteEpoch++;
     try {
       final prefs = await SharedPreferences.getInstance();
+      // Merge riders another tab registered since we last read storage, so a
+      // write from this tab (e.g. a rider going online) never drops them.
+      await prefs.reload();
+      final existingRaw = prefs.getString('qb_delivery_partners_json');
+      if (existingRaw != null && existingRaw.isNotEmpty) {
+        for (final item in jsonDecode(existingRaw) as List<dynamic>) {
+          final stored = DeliveryPartnerModel.fromJson(item as Map<String, dynamic>);
+          if (!_localRiders.any((r) => r.id == stored.id)) _localRiders.add(stored);
+        }
+      }
       final ridersJson = _localRiders.map((r) => r.toJson()).toList();
       await prefs.setString('qb_delivery_partners_json', jsonEncode(ridersJson));
       for (final r in _localRiders) {
@@ -2518,12 +2556,19 @@ class SupabaseService {
       }
     } catch (e) {
       debugPrint('[SupabaseService] Error persisting custom riders: $e');
+    } finally {
+      _riderWritesInFlight--;
     }
   }
 
   Future<void> _loadCustomRidersFromPrefs() async {
+    final epoch = _riderWriteEpoch;
     try {
       final prefs = await SharedPreferences.getInstance();
+      await prefs.reload(); // pick up status / assignment changes from other tabs
+      // Skip if this device wrote (or is writing) since the read began: the
+      // storage copy we just read may be older than memory.
+      if (_riderWritesInFlight > 0 || epoch != _riderWriteEpoch) return;
       final raw = prefs.getString('qb_delivery_partners_json');
       if (raw != null && raw.isNotEmpty) {
         final List<dynamic> list = jsonDecode(raw);
@@ -2551,10 +2596,17 @@ class SupabaseService {
 
   /// Fetch all delivery partners
   Future<List<DeliveryPartnerModel>> getDeliveryPartners() async {
-    if (_localRiders.isEmpty) {
-      _localRiders.addAll(TestRiderFixtures.defaultTestRiders);
-      await _loadCustomRidersFromPrefs();
+    // Seed the built-in test riders once, even if a partner was registered
+    // before the first fetch (previously skipped whenever the list was non-empty).
+    if (!_testRidersSeeded) {
+      _testRidersSeeded = true;
+      for (final t in TestRiderFixtures.defaultTestRiders) {
+        if (!_localRiders.any((r) => r.id == t.id)) _localRiders.add(t);
+      }
     }
+    // Always re-read shared storage so Admin ↔ Rider tabs see each other's
+    // status toggles and assignments (previously only read once per tab).
+    await _loadCustomRidersFromPrefs();
 
     if (!_isInitialized) {
       return List<DeliveryPartnerModel>.from(_localRiders);
@@ -2599,7 +2651,13 @@ class SupabaseService {
     String vehicleType = 'bike',
     DeliveryPartnerStatus status = DeliveryPartnerStatus.offline, // Default to offline!
   }) async {
-    final newId = 'rider-${DateTime.now().millisecondsSinceEpoch}';
+    // Millisecond timestamps collide when two partners are added back to back
+    // (duplicate IDs → duplicate list entries); suffix until unique.
+    final base = 'rider-${DateTime.now().millisecondsSinceEpoch}';
+    var newId = base;
+    for (var n = 2; _localRiders.any((r) => r.id == newId); n++) {
+      newId = '$base-$n';
+    }
     final rider = DeliveryPartnerModel(
       id: newId,
       name: name,
@@ -2667,16 +2725,35 @@ class SupabaseService {
     );
 
     final cleanId = orderId.replaceAll('#', '').trim();
-    final orderIdx = _localOrders.indexWhere((o) {
+    bool matches(OrderModel o) {
       final cleanNum = o.orderNumber.replaceAll('#', '').trim();
       return o.id == orderId || o.id == cleanId || o.orderNumber == orderId || cleanNum == cleanId;
-    });
+    }
+
+    var orderIdx = _localOrders.indexWhere(matches);
+    if (orderIdx == -1) {
+      // The Admin board also lists orders that only exist in the database
+      // (placed in another browser/session). Track them locally so the
+      // assignment reaches the rider app instead of silently doing nothing.
+      final all = await getAllStoreOrders();
+      final dbOnly = all.where(matches).toList();
+      if (dbOnly.isNotEmpty) {
+        _localOrders.insert(0, dbOnly.first);
+        orderIdx = 0;
+      }
+    }
+    if (orderIdx == -1) {
+      debugPrint('[SupabaseService] assignRiderToOrder: order $orderId not found');
+      return false;
+    }
 
     final now = DateTime.now();
 
     // 1. Update order locally
+    String? previousRiderId;
     if (orderIdx != -1) {
       final current = _localOrders[orderIdx];
+      previousRiderId = current.riderId;
       _localOrders[orderIdx] = current.copyWith(
         status: OrderStatus.partnerAssigned,
         riderId: rider.id,
@@ -2686,8 +2763,14 @@ class SupabaseService {
         deliveryStage: 'assigned',
         assignedAt: now,
       );
+      await _setRiderUnassignedMarker(_localOrders[orderIdx].id, present: false);
       await _persistCustomOrders();
       _notifyOrdersChanged();
+    }
+
+    // Reassignment: free the previous rider, otherwise they stay "busy" forever.
+    if (previousRiderId != null && previousRiderId != rider.id) {
+      await releaseRider(previousRiderId, note: 'order reassigned to ${rider.name}');
     }
 
     // 2. Mark rider as busy on active order
@@ -2705,7 +2788,9 @@ class SupabaseService {
       try {
         final updateMap = {
           'order_status': 'partner_assigned',
-          'rider_id': rider.id,
+          // rider_id is a FK to delivery_partners(id); local-only riders have
+          // non-UUID ids and would make the whole update fail.
+          if (_isUuid(rider.id)) 'rider_id': rider.id,
           'rider_name': rider.name,
           'rider_phone': rider.phone,
           'rider_vehicle': rider.vehicleNumber,
@@ -2794,7 +2879,8 @@ class SupabaseService {
 
   /// Reject an order assignment by a delivery partner.
   /// Reverts order back to packing stage and frees the rider to accept other orders.
-  Future<bool> rejectOrderAssignment(String orderId, String riderId) async {
+  /// [reason] (optional) is recorded in the order history for the store team.
+  Future<bool> rejectOrderAssignment(String orderId, String riderId, {String? reason, bool countAsRejection = true}) async {
     final cleanId = orderId.replaceAll('#', '').trim();
     final orderIdx = _localOrders.indexWhere((o) {
       final cleanNum = o.orderNumber.replaceAll('#', '').trim();
@@ -2841,20 +2927,22 @@ class SupabaseService {
         otpAttempts: current.otpAttempts,
         otpExpiresAt: current.otpExpiresAt,
       );
+      await _setRiderUnassignedMarker(current.id, present: true);
       await _persistCustomOrders();
       _notifyOrdersChanged();
     }
 
-    // 2. Free rider
+    // 2. Free rider (clearActiveOrder: `activeOrderId: null` alone is a no-op in copyWith)
     final rIdx = _localRiders.indexWhere((r) => r.id == riderId);
     if (rIdx != -1) {
       _localRiders[rIdx] = _localRiders[rIdx].copyWith(
         status: DeliveryPartnerStatus.online,
-        activeOrderId: null,
+        clearActiveOrder: true,
       );
       await _persistCustomRiders();
       _notifyRidersChanged();
     }
+    if (countAsRejection) await _incrementRiderRejections(riderId);
 
     if (_isInitialized) {
       try {
@@ -2884,7 +2972,9 @@ class SupabaseService {
         await client.from('order_status_history').insert({
           'order_id': cleanId,
           'status': 'preparing',
-          'notes': 'Delivery request declined by rider. Returned to packing pool.',
+          'notes': countAsRejection
+              ? 'Delivery request declined by rider${reason != null ? ' ($reason)' : ''}. Returned to packing pool.'
+              : '${reason ?? 'Rider unassigned by store'}. Returned to packing pool.',
         });
       } catch (e) {
         debugPrint('[SupabaseService] Error declining order assignment in DB: $e');
@@ -2916,6 +3006,9 @@ class SupabaseService {
         if (res is Map<String, dynamic>) {
           if (res['success'] == true) {
             await updateOrderStatus(orderId, OrderStatus.delivered);
+            // The RPC already released the rider in the DB; mirror it locally
+            // so this device's state matches without waiting for a refetch.
+            await _completeDeliveryLocally(orderId, riderId);
           }
           return res;
         }
@@ -2985,35 +3078,250 @@ class SupabaseService {
     }
 
     // 6. OTP Correct! Transition order to delivered
-    final now = DateTime.now();
     await updateOrderStatus(order.id, OrderStatus.delivered);
-    final orderIdx = _localOrders.indexWhere((o) => o.id == order.id || o.orderNumber == order.orderNumber);
-    if (orderIdx != -1) {
-      _localOrders[orderIdx] = _localOrders[orderIdx].copyWith(
-        status: OrderStatus.delivered,
-        deliveryStage: 'delivered',
-        deliveredAt: now,
-      );
-      await _persistCustomOrders();
-      _notifyOrdersChanged();
-    }
-
-    // 7. Update rider state: release active order & increment completed deliveries
-    final rIdx = _localRiders.indexWhere((r) => r.id == riderId);
-    if (rIdx != -1) {
-      _localRiders[rIdx] = _localRiders[rIdx].copyWith(
-        totalDeliveries: _localRiders[rIdx].totalDeliveries + 1,
-        status: DeliveryPartnerStatus.online, // Free for new orders
-        activeOrderId: null,
-      );
-      await _persistCustomRiders();
-      _notifyRidersChanged();
-    }
+    // 7. Mark delivered locally, release the rider & count the delivery
+    await _completeDeliveryLocally(order.id, riderId);
 
     return {
       'success': true,
       'message': 'Delivery verified and marked as delivered successfully.',
     };
+  }
+
+  // ==========================================
+  // DELIVERY PARTNER APP SUPPORT
+  // ==========================================
+
+  static const String _riderUnassignedKeyPrefix = 'qb_rider_unassigned_';
+  static const String _riderRejectionsKeyPrefix = 'qb_rider_rejections_';
+
+  /// Tombstone marking that an order's rider was deliberately removed, so other
+  /// tabs clear their copy instead of keeping the stale rider (see loader).
+  Future<void> _setRiderUnassignedMarker(String orderId, {required bool present}) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      if (present) {
+        await prefs.setString('$_riderUnassignedKeyPrefix$orderId', DateTime.now().toIso8601String());
+      } else {
+        await prefs.remove('$_riderUnassignedKeyPrefix$orderId');
+      }
+    } catch (e) {
+      debugPrint('[SupabaseService] Error updating rider un-assignment marker: $e');
+    }
+  }
+
+  Future<void> _incrementRiderRejections(String riderId) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final key = '$_riderRejectionsKeyPrefix$riderId';
+      await prefs.setInt(key, (prefs.getInt(key) ?? 0) + 1);
+    } catch (_) {}
+  }
+
+  /// Number of delivery requests this rider has declined (acceptance rate).
+  Future<int> getRiderRejectionCount(String riderId) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      return prefs.getInt('$_riderRejectionsKeyPrefix$riderId') ?? 0;
+    } catch (_) {
+      return 0;
+    }
+  }
+
+  /// Marks the order delivered locally and frees the rider (+1 delivery).
+  Future<void> _completeDeliveryLocally(String orderId, String riderId) async {
+    final cleanId = orderId.replaceAll('#', '').trim();
+    final orderIdx = _localOrders.indexWhere((o) {
+      final cleanNum = o.orderNumber.replaceAll('#', '').trim();
+      return o.id == orderId || o.id == cleanId || o.orderNumber == orderId || cleanNum == cleanId;
+    });
+    if (orderIdx != -1) {
+      _localOrders[orderIdx] = _localOrders[orderIdx].copyWith(
+        status: OrderStatus.delivered,
+        deliveryStage: 'delivered',
+        deliveredAt: DateTime.now(),
+      );
+      await _persistCustomOrders();
+      _notifyOrdersChanged();
+    }
+
+    final rIdx = _localRiders.indexWhere((r) => r.id == riderId);
+    if (rIdx != -1) {
+      _localRiders[rIdx] = _localRiders[rIdx].copyWith(
+        totalDeliveries: _localRiders[rIdx].totalDeliveries + 1,
+        status: DeliveryPartnerStatus.online, // Free for new orders
+        clearActiveOrder: true,
+      );
+      await _persistCustomRiders();
+      _notifyRidersChanged();
+    }
+  }
+
+  /// Frees a rider whose active order ended outside the rider app
+  /// (e.g. cancelled by the customer or store). Does not count a delivery.
+  Future<void> releaseRider(String riderId, {String? note}) async {
+    final rIdx = _localRiders.indexWhere((r) => r.id == riderId);
+    if (rIdx != -1) {
+      final current = _localRiders[rIdx];
+      _localRiders[rIdx] = current.copyWith(
+        status: current.isOffline ? DeliveryPartnerStatus.offline : DeliveryPartnerStatus.online,
+        clearActiveOrder: true,
+      );
+      await _persistCustomRiders();
+      _notifyRidersChanged();
+    }
+    if (_isInitialized && _isUuid(riderId)) {
+      try {
+        await client.from('delivery_partners').update({
+          'status': 'online',
+          'active_order_id': null,
+          'updated_at': DateTime.now().toIso8601String(),
+        }).eq('id', riderId);
+      } catch (e) {
+        debugPrint('[SupabaseService] Error releasing rider in DB: $e');
+      }
+    }
+    if (note != null) debugPrint('[SupabaseService] Rider $riderId released: $note');
+  }
+
+  /// Finds a registered delivery partner by mobile number (formatting-insensitive,
+  /// compares the last 10 digits).
+  Future<DeliveryPartnerModel?> findDeliveryPartnerByPhone(String phone) async {
+    String digits(String s) {
+      final d = s.replaceAll(RegExp(r'\D'), '');
+      return d.length > 10 ? d.substring(d.length - 10) : d;
+    }
+
+    final wanted = digits(phone);
+    if (wanted.length != 10) return null;
+    final all = await getDeliveryPartners();
+    for (final r in all) {
+      if (digits(r.phone) == wanted) return r;
+    }
+    return null;
+  }
+
+  /// Store unassigns the rider (Admin Panel). Returns the order to packing and
+  /// frees the rider without counting it against their acceptance rate.
+  Future<bool> unassignRider(String orderId, {String reason = 'Unassigned by store'}) async {
+    final order = getOrderById(orderId);
+    final riderId = order?.riderId;
+    if (order == null || riderId == null) return false;
+    return rejectOrderAssignment(order.id, riderId, reason: reason, countAsRejection: false);
+  }
+
+  /// Rider records a problem with a delivery (customer unreachable, wrong
+  /// address, …). The order is flagged `issue_reported` for the store team,
+  /// who decide whether to reassign or cancel it from the Admin Panel.
+  Future<bool> reportDeliveryIssue({
+    required String orderId,
+    required String riderId,
+    required String reason,
+    String? note,
+  }) async {
+    final cleanId = orderId.replaceAll('#', '').trim();
+    final orderIdx = _localOrders.indexWhere((o) {
+      final cleanNum = o.orderNumber.replaceAll('#', '').trim();
+      return o.id == orderId || o.id == cleanId || o.orderNumber == orderId || cleanNum == cleanId;
+    });
+    if (orderIdx != -1) {
+      if (_localOrders[orderIdx].riderId != riderId) return false;
+      _localOrders[orderIdx] = _localOrders[orderIdx].copyWith(deliveryStage: 'issue_reported');
+      await _persistCustomOrders();
+      _notifyOrdersChanged();
+    }
+
+    final message = 'Rider reported issue: $reason${(note ?? '').trim().isNotEmpty ? ' — ${note!.trim()}' : ''}';
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('qb_rider_issue_$cleanId', message);
+    } catch (_) {}
+
+    if (_isInitialized && _isUuid(cleanId)) {
+      try {
+        await client.from('orders').update({
+          'delivery_stage': 'issue_reported',
+          'updated_at': DateTime.now().toIso8601String(),
+        }).eq('id', cleanId);
+        await client.from('order_status_history').insert({
+          'order_id': cleanId,
+          'status': 'partner_assigned',
+          'notes': message,
+        });
+      } catch (e) {
+        debugPrint('[SupabaseService] Error reporting delivery issue in DB: $e');
+      }
+    }
+    return true;
+  }
+
+  /// The issue text a rider reported for [orderId], if any.
+  Future<String?> getReportedIssue(String orderId) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      return prefs.getString('qb_rider_issue_${orderId.replaceAll('#', '').trim()}');
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Orders assigned to [riderId], sanitised for the rider (no delivery OTP).
+  ///
+  /// Local orders are re-read from shared storage (cross-tab sync). Database
+  /// orders are read through `rider_orders_view`, which excludes the
+  /// `delivery_otp` column — the rider app never selects from `orders` directly.
+  Future<List<OrderModel>> getRiderOrders(String riderId) async {
+    if (_localOrders.isEmpty) {
+      _seedSampleOrder('00000000-0000-0000-0000-000000000000');
+    }
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.reload();
+      _loadCustomOrdersFromPrefs(prefs);
+      for (int i = 0; i < _localOrders.length; i++) {
+        _localOrders[i] = _syncOrderWithLatestStatus(_localOrders[i], prefs);
+      }
+    } catch (_) {}
+
+    final result = <OrderModel>[
+      for (final o in _localOrders)
+        if (o.riderId == riderId) o.toRiderView(),
+    ];
+
+    if (_isInitialized && _isUuid(riderId)) {
+      try {
+        final rows = await client
+            .from('rider_orders_view')
+            .select()
+            .eq('rider_id', riderId)
+            .order('created_at', ascending: false)
+            .limit(100) as List<dynamic>;
+        final ids = rows.map((r) => (r as Map<String, dynamic>)['id'] as String).toList();
+        final itemsByOrder = <String, List<dynamic>>{};
+        if (ids.isNotEmpty) {
+          final items = await client.from('order_items').select().inFilter('order_id', ids) as List<dynamic>;
+          for (final it in items) {
+            final m = it as Map<String, dynamic>;
+            itemsByOrder.putIfAbsent(m['order_id'] as String, () => []).add(m);
+          }
+        }
+        for (final row in rows) {
+          final map = Map<String, dynamic>.from(row as Map<String, dynamic>);
+          map['order_items'] = itemsByOrder[map['id']] ?? const [];
+          final (items, cleanInstructions) = _extractItemsAndInstructions(map);
+          map['delivery_instructions'] = cleanInstructions;
+          final dbOrder = OrderModel.fromJson(map, items: items).toRiderView();
+          if (!result.any((o) => o.id == dbOrder.id || o.orderNumber == dbOrder.orderNumber)) {
+            result.add(dbOrder);
+          }
+        }
+      } catch (e) {
+        debugPrint('[SupabaseService] Error fetching rider orders view: $e');
+      }
+    }
+
+    result.sort((a, b) => b.createdAt.compareTo(a.createdAt));
+    return result;
   }
 
   /// Add or update an order in memory (useful for testing and deterministic local state)
