@@ -156,7 +156,13 @@ class _AdminOrdersBoardState extends State<AdminOrdersBoard> {
                 runSpacing: 14,
                 children: [
                   for (var i = 0; i < OrderFlow.activeStages.length; i++)
-                    SizedBox(width: w, child: _column(i, orders.where((o) => o.status == OrderFlow.activeStages[i]).toList())),
+                    SizedBox(
+                      width: w,
+                      child: _column(
+                        i,
+                        orders.where((o) => o.status == OrderFlow.activeStages[i] || (OrderFlow.activeStages[i] == OrderStatus.packing && o.status == OrderStatus.partnerAssigned)).toList(),
+                      ),
+                    ),
                 ],
               );
             },
@@ -445,6 +451,7 @@ class _AdminOrdersBoardState extends State<AdminOrdersBoard> {
     final isCod = o.paymentMethod == 'cod';
 
     return AnimatedContainer(
+      key: ValueKey('order_card_${o.id}'),
       duration: const Duration(milliseconds: 300),
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
@@ -546,6 +553,45 @@ class _AdminOrdersBoardState extends State<AdminOrdersBoard> {
               Text(qbRupees(o.grandTotal), style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w800)),
             ],
           ),
+          if (OrderFlow.hasRider(o) || OrderFlow.step(o) == AdminStep.assignRider) ...[
+            const SizedBox(height: 10),
+            Container(
+              key: ValueKey('rider_progress_${o.id}'),
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+              decoration: BoxDecoration(
+                color: OrderFlow.hasIssue(o)
+                    ? AppColors.errorLight
+                    : (OrderFlow.hasRider(o) ? AppColors.primaryTint : AppColors.accentLight),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Row(
+                children: [
+                  Icon(
+                    OrderFlow.hasIssue(o) ? Icons.report_gmailerrorred_rounded : Icons.two_wheeler_rounded,
+                    size: 16,
+                    color: OrderFlow.hasIssue(o)
+                        ? AppColors.error
+                        : (OrderFlow.hasRider(o) ? AppColors.primaryDeep : AppColors.accentInk),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      OrderFlow.hasRider(o) ? OrderFlow.riderProgress(o) : 'Packed? Assign a rider to deliver it',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w700,
+                        color: OrderFlow.hasIssue(o)
+                            ? AppColors.error
+                            : (OrderFlow.hasRider(o) ? AppColors.primaryDeep : AppColors.accentInk),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
           const Padding(padding: EdgeInsets.symmetric(vertical: 12), child: Divider(height: 1)),
           Row(
             children: [
@@ -565,7 +611,12 @@ class _AdminOrdersBoardState extends State<AdminOrdersBoard> {
               ],
               Expanded(
                 child: ElevatedButton(
-                  onPressed: busy ? null : () => _run(o, widget.onAdvance),
+                  // Status changes show a spinner; opening the rider picker / details doesn't.
+                  onPressed: busy
+                      ? null
+                      : () => const {AdminStep.accept, AdminStep.startPacking}.contains(OrderFlow.step(o))
+                          ? _run(o, widget.onAdvance)
+                          : widget.onAdvance(o),
                   style: ElevatedButton.styleFrom(
                     minimumSize: const Size(0, 42),
                     padding: const EdgeInsets.symmetric(horizontal: 10),
@@ -576,7 +627,7 @@ class _AdminOrdersBoardState extends State<AdminOrdersBoard> {
                       : Row(
                           mainAxisAlignment: MainAxisAlignment.center,
                           children: [
-                            Flexible(child: Text(OrderFlow.actionLabel(o.status), overflow: TextOverflow.ellipsis)),
+                            Flexible(child: Text(OrderFlow.stepLabel(o), overflow: TextOverflow.ellipsis)),
                             const SizedBox(width: 6),
                             const Icon(Icons.arrow_forward_rounded, size: 16),
                           ],
@@ -586,14 +637,8 @@ class _AdminOrdersBoardState extends State<AdminOrdersBoard> {
             ],
           ),
           const SizedBox(height: 6),
-          Text.rich(
-            TextSpan(children: [
-              const TextSpan(text: 'Moves to '),
-              TextSpan(
-                text: stageIndex < 3 ? OrderFlow.stageTitle(OrderFlow.activeStages[stageIndex + 1]) : 'Completed today',
-                style: const TextStyle(fontWeight: FontWeight.w800, color: AppColors.textBody),
-              ),
-            ]),
+          Text(
+            OrderFlow.stepHint(o),
             textAlign: TextAlign.center,
             style: const TextStyle(fontSize: 11, color: AppColors.textSecondary),
           ),

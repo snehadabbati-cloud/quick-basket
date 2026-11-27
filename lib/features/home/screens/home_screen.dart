@@ -120,8 +120,6 @@ class _HomeScreenState extends State<HomeScreen> {
         SupabaseService().checkStockOverridesChanged();
         if (_currentNavIndex == 3) {
           _loadUserOrders(silent: true);
-        } else if (_currentNavIndex == 0 || _currentNavIndex == 1) {
-          _loadCategories(silent: true);
         }
       }
     });
@@ -2328,6 +2326,13 @@ class _HomeScreenState extends State<HomeScreen> {
         'Store Staff Portal',
         'Restricted to authorized Store Managers',
         () => Navigator.pushNamed(context, '/admin'),
+        true,
+      ),
+      (
+        Icons.two_wheeler_rounded,
+        'Delivery Partner Portal',
+        'Rider deliveries, doorstep OTP & earnings',
+        () => Navigator.pushNamed(context, '/rider'),
         true,
       ),
     ];

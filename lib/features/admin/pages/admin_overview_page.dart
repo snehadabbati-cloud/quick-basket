@@ -455,7 +455,7 @@ class _AdminOverviewPageState extends State<AdminOverviewPage> {
                                 padding: const EdgeInsets.symmetric(horizontal: 12),
                                 textStyle: const TextStyle(fontSize: 12, fontWeight: FontWeight.w800),
                               ),
-                              child: Text(OrderFlow.shortAction(o.status)),
+                              child: Text(OrderFlow.stepShort(o)),
                             ),
                 ),
               ];

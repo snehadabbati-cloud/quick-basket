@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import '../../../core/constants/app_colors.dart';
 import '../../../models/order_model.dart';
 import '../../../services/supabase_service.dart';
+import 'admin_orders_logic.dart';
+import 'assign_rider_dialog.dart';
 
 /// Professional Dark Store Order Fulfillment & Fast-Picking Dialog
 class AdminOrderDetailsDialog extends StatefulWidget {
@@ -122,6 +124,39 @@ class _AdminOrderDetailsDialogState extends State<AdminOrderDetailsDialog> {
     }
   }
 
+  Future<void> _openAssignRider() async {
+    final assigned = await AssignRiderDialog.show(context, order: _order);
+    if (assigned == true) _refreshFromService();
+  }
+
+  Future<void> _unassignRider() async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Unassign rider?'),
+        content: Text('${_order.riderName ?? 'The rider'} will be freed and the order goes back to Picking & packing so you can assign someone else.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Keep')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Unassign')),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    setState(() => _isUpdating = true);
+    await SupabaseService().unassignRider(_order.id);
+    _refreshFromService();
+  }
+
+  void _refreshFromService() {
+    final fresh = SupabaseService().getOrderById(_order.id) ?? SupabaseService().getOrderById(_order.orderNumber);
+    if (!mounted) return;
+    setState(() {
+      if (fresh != null) _order = fresh;
+      _isUpdating = false;
+    });
+    widget.onOrderUpdated();
+  }
+
   Future<void> _updateStatus(OrderStatus newStatus) async {
     setState(() => _isUpdating = true);
     await SupabaseService().updateOrderStatus(_order.id, newStatus);
@@ -138,82 +173,6 @@ class _AdminOrderDetailsDialogState extends State<AdminOrderDetailsDialog> {
       });
       widget.onOrderUpdated();
     }
-  }
-
-  void _promptOtpVerification() {
-    final otpController = TextEditingController();
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-        title: const Row(
-          children: [
-            Icon(Icons.verified_user_rounded, color: Color(0xFF0C8340), size: 24),
-            SizedBox(width: 8),
-            Text('Verify Delivery OTP', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 18)),
-          ],
-        ),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text(
-              'Ask the customer for the 4-digit verification code shown on their live tracking screen.',
-              style: TextStyle(fontSize: 13, color: AppColors.textSecondary),
-            ),
-            const SizedBox(height: 18),
-            TextField(
-              controller: otpController,
-              keyboardType: TextInputType.number,
-              maxLength: 4,
-              autofocus: true,
-              textAlign: TextAlign.center,
-              style: const TextStyle(fontSize: 26, fontWeight: FontWeight.w900, letterSpacing: 10),
-              decoration: InputDecoration(
-                hintText: '••••',
-                counterText: '',
-                filled: true,
-                fillColor: const Color(0xFFF9FAFB),
-                border: OutlineInputBorder(borderRadius: BorderRadius.circular(14)),
-                focusedBorder: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(14),
-                  borderSide: const BorderSide(color: Color(0xFF0C8340), width: 2),
-                ),
-              ),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('Cancel', style: TextStyle(fontWeight: FontWeight.w700)),
-          ),
-          ElevatedButton(
-            onPressed: () {
-              final entered = otpController.text.trim();
-              if (entered == _order.deliveryOtp || entered == '4892' || entered == '4921') {
-                Navigator.pop(ctx);
-                _updateStatus(OrderStatus.delivered);
-              } else {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(
-                    content: Text('Incorrect OTP! Please verify with customer.'),
-                    backgroundColor: Colors.redAccent,
-                  ),
-                );
-              }
-            },
-            style: ElevatedButton.styleFrom(
-              backgroundColor: const Color(0xFF0C8340),
-              foregroundColor: Colors.white,
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-            ),
-            child: const Text('Confirm & Mark Delivered', style: TextStyle(fontWeight: FontWeight.w800)),
-          ),
-        ],
-      ),
-    );
   }
 
   @override
@@ -259,6 +218,11 @@ class _AdminOrderDetailsDialogState extends State<AdminOrderDetailsDialog> {
                   children: [
                     // Delivery Destination & Customer Info
                     _buildCustomerDestinationCard(),
+
+                    const SizedBox(height: 12),
+
+                    // Delivery Partner Assignment Card
+                    _buildDeliveryPartnerCard(),
 
                     const SizedBox(height: 16),
 
@@ -606,6 +570,137 @@ class _AdminOrderDetailsDialogState extends State<AdminOrderDetailsDialog> {
     );
   }
 
+  Widget _buildDeliveryPartnerCard() {
+    final hasRider = _order.riderId != null || (_order.riderName != null && _order.riderName!.isNotEmpty);
+    final isDelivered = _order.status == OrderStatus.delivered;
+    final isCancelled = _order.status == OrderStatus.cancelled;
+
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: hasRider ? const Color(0xFFF1F8E9) : const Color(0xFFF8F9FA),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: hasRider ? const Color(0xFFA5D6A7) : const Color(0xFFE5E7EB)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Expanded(
+                child: Row(
+                  children: [
+                    Icon(
+                      Icons.two_wheeler_rounded,
+                      size: 18,
+                      color: hasRider ? const Color(0xFF2E7D32) : AppColors.textSecondary,
+                    ),
+                    const SizedBox(width: 8),
+                    Flexible(
+                      child: Text(
+                        hasRider ? 'Assigned Delivery Partner' : 'Delivery Partner Assignment',
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 13),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              if (!isDelivered && !isCancelled && _order.status != OrderStatus.placed)
+                TextButton.icon(
+                  onPressed: _isUpdating ? null : _openAssignRider,
+                  icon: Icon(hasRider ? Icons.swap_horiz_rounded : Icons.person_add_rounded, size: 14),
+                  label: Text(hasRider ? 'Reassign' : 'Assign Rider', style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w800)),
+                  style: TextButton.styleFrom(
+                    foregroundColor: hasRider ? const Color(0xFF2E7D32) : AppColors.primary,
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                    minimumSize: Size.zero,
+                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  ),
+                ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          if (hasRider) ...[
+            Row(
+              children: [
+                CircleAvatar(
+                  radius: 14,
+                  backgroundColor: const Color(0xFFC8E6C9),
+                  child: Text(
+                    _order.riderName?.isNotEmpty == true ? _order.riderName![0].toUpperCase() : 'R',
+                    style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w800, color: Color(0xFF1B5E20)),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        _order.riderName ?? 'Delivery Partner',
+                        style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppColors.textPrimary),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        '${_order.riderPhone ?? ""} · ${_order.riderVehicleNumber ?? ""}',
+                        style: const TextStyle(fontSize: 11, color: AppColors.textSecondary),
+                      ),
+                    ],
+                  ),
+                ),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFE8F5E9),
+                    borderRadius: BorderRadius.circular(6),
+                    border: Border.all(color: const Color(0xFFA5D6A7)),
+                  ),
+                  child: Text(
+                    (_order.deliveryStage ?? 'assigned').replaceAll('_', ' ').toUpperCase(),
+                    style: const TextStyle(fontSize: 10, fontWeight: FontWeight.w800, color: Color(0xFF2E7D32)),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Text(
+              OrderFlow.riderProgress(_order),
+              key: const ValueKey('admin_rider_progress'),
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w700,
+                color: OrderFlow.hasIssue(_order) ? AppColors.error : const Color(0xFF2E7D32),
+              ),
+            ),
+            if (!isDelivered && !isCancelled && _order.status != OrderStatus.outForDelivery) ...[
+              const SizedBox(height: 4),
+              TextButton.icon(
+                onPressed: _isUpdating ? null : _unassignRider,
+                icon: const Icon(Icons.person_remove_alt_1_rounded, size: 14),
+                label: const Text('Unassign rider', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w800)),
+                style: TextButton.styleFrom(
+                  foregroundColor: AppColors.error,
+                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                  minimumSize: Size.zero,
+                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                ),
+              ),
+            ],
+          ] else ...[
+            Text(
+              _order.status == OrderStatus.placed
+                  ? 'Accept the order first, then assign an online rider.'
+                  : "No delivery partner assigned yet. Assign an online rider — they pick it up from the store and deliver it with the customer's OTP.",
+              style: const TextStyle(fontSize: 12, color: AppColors.textSecondary),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
   Widget _buildBottomActionBar() {
     final status = _order.status;
 
@@ -656,33 +751,44 @@ class _AdminOrderDetailsDialogState extends State<AdminOrderDetailsDialog> {
                 ),
               ),
             ),
-          ] else if (status == OrderStatus.packing) ...[
+          ] else if (status == OrderStatus.packing || status == OrderStatus.partnerAssigned || status == OrderStatus.outForDelivery) ...[
             Expanded(
-              child: ElevatedButton.icon(
-                onPressed: _isUpdating ? null : () => _updateStatus(OrderStatus.outForDelivery),
-                icon: const Icon(Icons.delivery_dining_rounded, size: 20),
-                label: const Text('Handover to Rider & Dispatch', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 14)),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: const Color(0xFFE65100),
-                  foregroundColor: Colors.white,
-                  padding: const EdgeInsets.symmetric(vertical: 14),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                ),
-              ),
-            ),
-          ] else if (status == OrderStatus.outForDelivery) ...[
-            Expanded(
-              child: ElevatedButton.icon(
-                onPressed: _isUpdating ? null : _promptOtpVerification,
-                icon: const Icon(Icons.verified_rounded, size: 20),
-                label: const Text('Verify Delivery OTP & Complete', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 14)),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: const Color(0xFF0C8340),
-                  foregroundColor: Colors.white,
-                  padding: const EdgeInsets.symmetric(vertical: 14),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                ),
-              ),
+              child: OrderFlow.hasRider(_order) && !OrderFlow.hasIssue(_order)
+                  ? Container(
+                      key: const ValueKey('admin_rider_driven_status'),
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFF1F8E9),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: const Color(0xFFA5D6A7)),
+                      ),
+                      child: Row(
+                        children: [
+                          const Icon(Icons.two_wheeler_rounded, color: Color(0xFF2E7D32), size: 20),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              status == OrderStatus.outForDelivery
+                                  ? "Out for delivery — the rider completes it with the customer's OTP"
+                                  : 'Rider assigned — the order moves to Out for delivery when the rider picks it up',
+                              style: const TextStyle(fontWeight: FontWeight.w700, color: Color(0xFF1B5E20), fontSize: 13),
+                            ),
+                          ),
+                        ],
+                      ),
+                    )
+                  : ElevatedButton.icon(
+                      onPressed: _isUpdating ? null : _openAssignRider,
+                      icon: Icon(OrderFlow.hasIssue(_order) ? Icons.swap_horiz_rounded : Icons.person_add_rounded, size: 20),
+                      label: Text(OrderFlow.hasIssue(_order) ? 'Rider reported an issue — Reassign rider' : 'Assign Rider',
+                          style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 14)),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: OrderFlow.hasIssue(_order) ? AppColors.error : const Color(0xFFE65100),
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(vertical: 14),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                      ),
+                    ),
             ),
           ] else if (status == OrderStatus.delivered) ...[
             Expanded(
@@ -777,6 +883,11 @@ class _AdminOrderDetailsDialogState extends State<AdminOrderDetailsDialog> {
         bg = const Color(0xFFFFF3E0);
         fg = const Color(0xFFE65100);
         icon = Icons.inventory_2_rounded;
+        break;
+      case OrderStatus.partnerAssigned:
+        bg = const Color(0xFFE0F2FE);
+        fg = const Color(0xFF0369A1);
+        icon = Icons.delivery_dining_rounded;
         break;
       case OrderStatus.outForDelivery:
         bg = const Color(0xFFE1F5FE);

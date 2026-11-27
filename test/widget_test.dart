@@ -8,16 +8,26 @@ import 'package:quick_basket/features/order/screens/order_tracking_screen.dart';
 import 'package:quick_basket/features/admin/pages/admin_overview_page.dart';
 import 'package:quick_basket/features/admin/screens/admin_categories_screen.dart';
 import 'package:quick_basket/features/admin/screens/admin_dashboard_screen.dart';
+import 'package:quick_basket/features/admin/pages/admin_delivery_partners_page.dart';
+import 'package:quick_basket/features/admin/widgets/add_delivery_partner_dialog.dart';
+import 'package:quick_basket/features/admin/widgets/assign_rider_dialog.dart';
+import 'package:quick_basket/features/admin/widgets/admin_sidebar.dart';
+import 'package:quick_basket/features/rider/controllers/rider_session.dart';
+import 'package:quick_basket/features/rider/screens/delivery_flow_screens.dart';
+import 'package:quick_basket/features/rider/screens/rider_shell.dart';
 import 'package:quick_basket/services/supabase_service.dart';
 import 'package:quick_basket/models/order_model.dart';
 import 'package:quick_basket/models/cart_item_model.dart';
 import 'package:quick_basket/models/address_model.dart';
 import 'package:quick_basket/models/delivery_area_model.dart';
+import 'package:quick_basket/models/delivery_partner_model.dart';
+import 'package:quick_basket/core/config/delivery_config.dart';
 import 'package:quick_basket/shared_widgets/product_card.dart';
 
 void main() {
   setUp(() {
     SharedPreferences.setMockInitialValues({});
+    RiderSession().resetForTest();
   });
 
   void useSize(WidgetTester tester, Size size) {
@@ -763,8 +773,722 @@ void main() {
     expect(OrderStatusExtension.fromString('pending'), OrderStatus.placed);
     expect(OrderStatusExtension.fromString('accepted'), OrderStatus.confirmed);
     expect(OrderStatusExtension.fromString('preparing'), OrderStatus.packing);
+    expect(OrderStatusExtension.fromString('partner_assigned'), OrderStatus.partnerAssigned);
     expect(OrderStatusExtension.fromString('out_for_delivery'), OrderStatus.outForDelivery);
     expect(OrderStatusExtension.fromString('delivered'), OrderStatus.delivered);
     expect(OrderStatusExtension.fromString('cancelled'), OrderStatus.cancelled);
+  });
+
+  test('DeliveryPartnerModel defaults to offline and serializes cleanly', () {
+    final newRider = DeliveryPartnerModel(
+      id: 'rider-001',
+      name: 'Ramesh Kumar',
+      phone: '+919876543210',
+      vehicleNumber: 'TS 09 AB 1234',
+    );
+
+    // Rule: New riders must default to offline
+    expect(newRider.status, DeliveryPartnerStatus.offline);
+    expect(newRider.isOnline, isFalse);
+    expect(newRider.isAvailable, isFalse);
+
+    final json = newRider.toJson();
+    expect(json['status'], 'offline');
+    expect(json['name'], 'Ramesh Kumar');
+
+    final parsed = DeliveryPartnerModel.fromJson(json);
+    expect(parsed.status, DeliveryPartnerStatus.offline);
+    expect(parsed.vehicleNumber, 'TS 09 AB 1234');
+  });
+
+  test('OrderModel toRiderView strips plain-text delivery OTP for security', () {
+    final customerOrder = OrderModel(
+      id: 'order-sec-1',
+      orderNumber: '#QB-101010',
+      userId: 'customer-1',
+      items: [],
+      itemTotal: 150.0,
+      grandTotal: 150.0,
+      deliveryOtp: '4821',
+      riderId: 'rider-001',
+      riderName: 'Ramesh Kumar',
+      status: OrderStatus.outForDelivery,
+    );
+
+    expect(customerOrder.deliveryOtp, '4821');
+
+    final riderOrderView = customerOrder.toRiderView();
+    // Security check: Rider view MUST NOT contain plain text delivery OTP
+    expect(riderOrderView.deliveryOtp, isEmpty);
+    expect(riderOrderView.riderId, 'rider-001');
+    expect(riderOrderView.riderName, 'Ramesh Kumar');
+  });
+
+  test('OrderModel serializes and deserializes all rider fields for Supabase', () {
+    final assignedTime = DateTime(2026, 11, 20, 10, 0, 0);
+    final pickedTime = DateTime(2026, 11, 20, 10, 15, 0);
+    final deliveredTime = DateTime(2026, 11, 20, 10, 30, 0);
+    final expiryTime = DateTime(2026, 11, 20, 12, 0, 0);
+
+    final order = OrderModel(
+      id: 'order-rider-fields',
+      orderNumber: '#QB-223344',
+      userId: 'cust-2',
+      items: [],
+      itemTotal: 250.0,
+      grandTotal: 250.0,
+      status: OrderStatus.partnerAssigned,
+      riderId: 'rider-001',
+      riderName: 'Ramesh Kumar',
+      riderPhone: '+919876543210',
+      riderVehicleNumber: 'TS 09 AB 1234',
+      deliveryStage: 'assigned',
+      assignedAt: assignedTime,
+      pickedUpAt: pickedTime,
+      deliveredAt: deliveredTime,
+      otpAttempts: 1,
+      otpExpiresAt: expiryTime,
+    );
+
+    final json = order.toJson();
+    expect(json['rider_id'], 'rider-001');
+    expect(json['rider_name'], 'Ramesh Kumar');
+    expect(json['rider_phone'], '+919876543210');
+    expect(json['rider_vehicle'], 'TS 09 AB 1234');
+    expect(json['delivery_stage'], 'assigned');
+    expect(json['order_status'], 'partner_assigned');
+    expect(json['otp_attempts'], 1);
+
+    final parsed = OrderModel.fromJson(json);
+    expect(parsed.riderId, 'rider-001');
+    expect(parsed.riderName, 'Ramesh Kumar');
+    expect(parsed.riderPhone, '+919876543210');
+    expect(parsed.riderVehicleNumber, 'TS 09 AB 1234');
+    expect(parsed.deliveryStage, 'assigned');
+    expect(parsed.status, OrderStatus.partnerAssigned);
+    expect(parsed.otpAttempts, 1);
+  });
+
+  test('DeliveryConfig centralizes constants and thresholds', () {
+    expect(DeliveryConfig.maxOtpAttempts, 3);
+    expect(DeliveryConfig.defaultPerDeliveryEarning, 40.0);
+    expect(DeliveryConfig.defaultStorePincode, '500090');
+    expect(DeliveryConfig.defaultStoreName, 'Nizampet Dark Store');
+  });
+
+  test('SupabaseService verifyDoorstepOtp enforces attempt limit, lockout, and atomic delivery completion', () async {
+    final service = SupabaseService();
+
+    // Setup an order with known OTP
+    final testOrder = OrderModel(
+      id: 'otp-test-order-1',
+      orderNumber: '#QB-778899',
+      userId: 'cust-otp-test',
+      items: [],
+      itemTotal: 300.0,
+      grandTotal: 300.0,
+      status: OrderStatus.outForDelivery,
+      deliveryStage: 'out_for_delivery',
+      deliveryOtp: '6543',
+      riderId: 'rider-test-01',
+      otpAttempts: 0,
+      otpExpiresAt: DateTime.now().add(const Duration(hours: 2)),
+    );
+
+    // Seed test order into service local cache
+    service.seedOrder(testOrder);
+    await service.assignRiderToOrder(
+      orderId: testOrder.id,
+      riderId: 'rider-test-01',
+    );
+
+    // 1. Wrong OTP Attempt 1
+    var result = await service.verifyDoorstepOtp(
+      orderId: testOrder.id,
+      enteredOtp: '0000',
+      riderId: 'rider-test-01',
+    );
+    expect(result['success'], isFalse);
+    expect(result['remaining_attempts'], 2);
+    expect(result['locked'], isFalse);
+
+    // 2. Wrong OTP Attempt 2
+    result = await service.verifyDoorstepOtp(
+      orderId: testOrder.id,
+      enteredOtp: '1111',
+      riderId: 'rider-test-01',
+    );
+    expect(result['success'], isFalse);
+    expect(result['remaining_attempts'], 1);
+    expect(result['locked'], isFalse);
+
+    // 3. Wrong OTP Attempt 3 -> Lockout
+    result = await service.verifyDoorstepOtp(
+      orderId: testOrder.id,
+      enteredOtp: '2222',
+      riderId: 'rider-test-01',
+    );
+    expect(result['success'], isFalse);
+    expect(result['remaining_attempts'], 0);
+    expect(result['locked'], isTrue);
+
+    // 4. Any further attempt is rejected even if correct OTP because of lockout
+    result = await service.verifyDoorstepOtp(
+      orderId: testOrder.id,
+      enteredOtp: '6543',
+      riderId: 'rider-test-01',
+    );
+    expect(result['success'], isFalse);
+    expect(result['locked'], isTrue);
+
+    // 5. Fresh order with correct OTP succeeds and transitions to delivered
+    final freshOrder = testOrder.copyWith(id: 'otp-success-order', otpAttempts: 0);
+    service.seedOrder(freshOrder);
+    result = await service.verifyDoorstepOtp(
+      orderId: freshOrder.id,
+      enteredOtp: '6543',
+      riderId: 'rider-test-01',
+    );
+    expect(result['success'], isTrue);
+    final deliveredOrder = service.getOrderById(freshOrder.id);
+    expect(deliveredOrder?.status, OrderStatus.delivered);
+    expect(deliveredOrder?.deliveredAt, isNotNull);
+  });
+
+  testWidgets('Admin Panel: AddDeliveryPartnerDialog registers rider with strict default offline status', (WidgetTester tester) async {
+    useSize(tester, const Size(1200, 900));
+
+    await tester.pumpWidget(const MaterialApp(home: Scaffold(body: Center(child: AddDeliveryPartnerDialog()))));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Add Delivery Partner'), findsOneWidget);
+    expect(find.textContaining('New riders default to Offline status'), findsOneWidget);
+
+    // Fill rider details
+    final textFields = find.byType(TextFormField);
+    await tester.enterText(textFields.at(0), 'Anand Verma');
+    await tester.enterText(textFields.at(1), '9876501234');
+    await tester.enterText(textFields.at(2), 'TS 08 EF 4321');
+
+    await tester.tap(find.text('Register Partner'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+
+    // Verify rider in service has status offline
+    final riders = await SupabaseService().getDeliveryPartners();
+    final created = riders.firstWhere((r) => r.phone.contains('9876501234'));
+    expect(created.name, 'Anand Verma');
+    expect(created.status, DeliveryPartnerStatus.offline);
+    expect(created.isOffline, isTrue);
+  });
+
+  testWidgets('Admin Panel: AdminDeliveryPartnersPage displays fleet and toggles online/offline status', (WidgetTester tester) async {
+    useSize(tester, const Size(1200, 900));
+
+    // Register a test rider
+    final testRider = await SupabaseService().addDeliveryPartner(
+      name: 'Kiran Rao',
+      phone: '9848012345',
+      vehicleNumber: 'TS 09 XY 9999',
+    );
+    expect(testRider.isOffline, isTrue);
+
+    await tester.pumpWidget(const MaterialApp(home: AdminDeliveryPartnersPage(orders: [])));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Delivery Partners'), findsOneWidget);
+    expect(find.text('Kiran Rao'), findsOneWidget);
+    expect(find.text('TS 09 XY 9999 (BIKE)'), findsOneWidget);
+
+    // Toggle rider from Offline to Online using rider-specific key
+    final switchFinder = find.byKey(ValueKey('switch_${testRider.id}'));
+    await tester.ensureVisible(switchFinder);
+    await tester.tap(switchFinder);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+
+    final updatedRider = (await SupabaseService().getDeliveryPartners()).firstWhere((r) => r.id == testRider.id);
+    expect(updatedRider.status, DeliveryPartnerStatus.online);
+    expect(updatedRider.isOnline, isTrue);
+    expect(updatedRider.isAvailableForAssignment, isTrue);
+  });
+
+  testWidgets('Admin Panel: AssignRiderDialog enforces that only online available riders can be assigned', (WidgetTester tester) async {
+    useSize(tester, const Size(1200, 900));
+
+    // 1. Create an order to assign
+    final unassignedOrder = OrderModel(
+      id: 'order-to-assign-1',
+      orderNumber: '#QB-554433',
+      userId: 'cust-assign',
+      items: [],
+      itemTotal: 400.0,
+      grandTotal: 400.0,
+      status: OrderStatus.packing,
+    );
+    SupabaseService().seedOrder(unassignedOrder);
+
+    // 2. Ensure an offline rider exists
+    final offlineRider = await SupabaseService().addDeliveryPartner(
+      name: 'Offline Partner',
+      phone: '9900112233',
+      vehicleNumber: 'TS 10 ZZ 1111',
+    );
+    expect(offlineRider.isOffline, isTrue);
+
+    // 3. Ensure an online rider exists
+    final onlineRider = await SupabaseService().addDeliveryPartner(
+      name: 'Online Partner',
+      phone: '9900112244',
+      vehicleNumber: 'TS 10 ZZ 2222',
+    );
+    await SupabaseService().updateDeliveryPartnerStatus(onlineRider.id, DeliveryPartnerStatus.online);
+
+    await tester.pumpWidget(MaterialApp(
+      home: Scaffold(
+        body: Center(child: AssignRiderDialog(order: unassignedOrder)),
+      ),
+    ));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Assign Delivery Partner'), findsOneWidget);
+    expect(find.text('#QB-554433'), findsOneWidget);
+
+    // The online partner should show 'Available'
+    expect(find.text('Available'), findsWidgets);
+
+    // Tap on the online rider using exact rider select key
+    final riderKeyFinder = find.byKey(ValueKey('rider_select_${onlineRider.id}'));
+    await tester.ensureVisible(riderKeyFinder);
+    await tester.tap(riderKeyFinder);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+
+    // Confirm assignment
+    final confirmFinder = find.text('Confirm Assignment');
+    await tester.ensureVisible(confirmFinder);
+    await tester.tap(confirmFinder);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 200));
+
+    // Verify order was transitioned and rider was assigned
+    final orderAfter = SupabaseService().getOrderById('order-to-assign-1');
+    expect(orderAfter?.riderId, onlineRider.id);
+    expect(orderAfter?.riderName, 'Online Partner');
+    expect(orderAfter?.status, OrderStatus.partnerAssigned);
+    expect(orderAfter?.deliveryStage, 'assigned');
+
+    // Verify rider is now busy with this active order
+    final riderAfter = (await SupabaseService().getDeliveryPartners()).firstWhere((r) => r.id == onlineRider.id);
+    expect(riderAfter.status, DeliveryPartnerStatus.busy);
+    expect(riderAfter.activeOrderId, 'order-to-assign-1');
+    expect(riderAfter.isAvailableForAssignment, isFalse);
+  });
+
+  testWidgets('Rider App: Dashboard displays duty toggle, earnings summary, and updates online/offline status', (WidgetTester tester) async {
+    useSize(tester, const Size(400, 850));
+
+    final rider = await SupabaseService().addDeliveryPartner(
+      name: 'Vikram Rao',
+      phone: '+91 98765 11223',
+      vehicleNumber: 'TS 07 CD 5678',
+    );
+    await RiderSession().debugSignIn(rider);
+
+    await tester.pumpWidget(const MaterialApp(home: RiderShell(autoOpenRequests: false)));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+
+    expect(find.text('Vikram Rao'), findsOneWidget);
+    expect(find.text("You're offline"), findsOneWidget);
+    expect(find.byKey(const ValueKey('today_earnings')), findsOneWidget);
+
+    // Toggle to Online
+    await tester.tap(find.byKey(const ValueKey('rider_duty_switch')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+
+    expect(find.text("You're online"), findsOneWidget);
+    // Admin sees the same status (shared service state)
+    final adminView = (await SupabaseService().getDeliveryPartners()).firstWhere((r) => r.id == rider.id);
+    expect(adminView.status, DeliveryPartnerStatus.online);
+
+    await tester.pumpWidget(const SizedBox()); // stop live sync timers
+  });
+
+  testWidgets('Rider App: Delivery pipeline advances through stages (Accept -> Reached Store -> Picked Up -> Out for Delivery)', (WidgetTester tester) async {
+    useSize(tester, const Size(400, 850));
+
+    final rider = await SupabaseService().addDeliveryPartner(
+      name: 'Suresh Reddy',
+      phone: '+91 98765 33445',
+      vehicleNumber: 'TS 09 XY 8888',
+    );
+    await SupabaseService().updateDeliveryPartnerStatus(rider.id, DeliveryPartnerStatus.online);
+
+    final assignedOrder = OrderModel(
+      id: 'order-rider-stage-1',
+      orderNumber: '#QB-889900',
+      userId: 'cust-stage-1',
+      items: [],
+      itemTotal: 300.0,
+      grandTotal: 300.0,
+      status: OrderStatus.partnerAssigned,
+      riderId: rider.id,
+      riderName: rider.name,
+      riderPhone: rider.phone,
+      riderVehicleNumber: rider.vehicleNumber,
+      deliveryStage: 'assigned',
+      deliveryOtp: '7766',
+    );
+    SupabaseService().seedOrder(assignedOrder);
+    await RiderSession().debugSignIn(rider);
+
+    await tester.pumpWidget(const MaterialApp(home: NewDeliveryRequestScreen(orderId: 'order-rider-stage-1')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+
+    // 1. Stage: assigned -> Rider sees "Accept order"
+    expect(find.text('Accept order'), findsOneWidget);
+    // Security check: plain-text OTP must NOT be displayed on rider screen
+    expect(find.text('7766'), findsNothing);
+    expect(RiderSession().orderById('order-rider-stage-1')?.deliveryOtp, isEmpty);
+
+    await tester.tap(find.text('Accept order'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 500));
+    await tester.pump(const Duration(milliseconds: 500)); // async action + route transition
+
+    // 2. Stage: accepted -> Go to store, slide when reached
+    expect(find.text('Go to store'), findsOneWidget);
+    expect(SupabaseService().getOrderById('order-rider-stage-1')?.deliveryStage, 'accepted');
+    await tester.tap(find.descendant(of: find.byKey(const ValueKey('slide_reached_store')), matching: find.byIcon(Icons.double_arrow_rounded)));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 500));
+    await tester.pump(const Duration(milliseconds: 500)); // async action + route transition
+
+    // 3. Stage: reached_store -> verify items & pick up
+    expect(SupabaseService().getOrderById('order-rider-stage-1')?.deliveryStage, 'reached_store');
+    await tester.tap(find.text('Verify items'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 500));
+    await tester.pump(const Duration(milliseconds: 500)); // async action + route transition
+    await tester.tap(find.text('Check all'));
+    await tester.pump();
+    await tester.tap(find.descendant(of: find.byKey(const ValueKey('slide_confirm_pickup')), matching: find.byIcon(Icons.double_arrow_rounded)));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 500));
+    await tester.pump(const Duration(milliseconds: 500)); // async action + route transition
+
+    // 4. Stage: picked_up -> out_for_delivery, customer delivery screen
+    expect(find.text('Deliver to customer'), findsOneWidget);
+    final updatedOrder = SupabaseService().getOrderById('order-rider-stage-1');
+    expect(updatedOrder?.status, OrderStatus.outForDelivery);
+    expect(updatedOrder?.deliveryStage, 'out_for_delivery');
+    expect(updatedOrder?.pickedUpAt, isNotNull);
+    expect(find.text('7766'), findsNothing);
+
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('Rider App: Doorstep OTP modal securely validates OTP and completes delivery without leaking plain text', (WidgetTester tester) async {
+    useSize(tester, const Size(400, 850));
+
+    final rider = await SupabaseService().addDeliveryPartner(
+      name: 'Ramesh Kumar',
+      phone: '+91 98765 00001',
+      vehicleNumber: 'TS 09 AB 1234',
+    );
+
+    final outOrder = OrderModel(
+      id: 'order-otp-modal-1',
+      orderNumber: '#QB-445566',
+      userId: 'cust-otp-1',
+      items: [],
+      itemTotal: 250.0,
+      grandTotal: 250.0,
+      status: OrderStatus.outForDelivery,
+      paymentMethod: 'cod',
+      riderId: rider.id,
+      riderName: rider.name,
+      deliveryStage: 'out_for_delivery',
+      deliveryOtp: '8822',
+      otpAttempts: 0,
+    );
+    SupabaseService().seedOrder(outOrder);
+    await RiderSession().debugSignIn(rider);
+
+    await tester.pumpWidget(const MaterialApp(home: DeliveryOtpScreen(orderId: 'order-otp-modal-1')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+
+    expect(find.text('Verify delivery'), findsOneWidget);
+    expect(find.text('#QB-445566'), findsOneWidget);
+
+    // Security check: Plain-text OTP 8822 must NEVER be displayed
+    expect(find.text('8822'), findsNothing);
+
+    Future<void> enter(String otp) async {
+      for (final d in otp.split('')) {
+        await tester.tap(find.byKey(ValueKey('key_$d')));
+        await tester.pump();
+      }
+    }
+
+    // COD order: cash confirmation is required before verifying
+    await tester.tap(find.byKey(const ValueKey('cod_collected_check')));
+    await tester.pump();
+
+    // 1. Enter wrong OTP
+    await enter('1234');
+    await tester.tap(find.text('Verify & complete delivery'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 200));
+
+    expect(find.textContaining('Incorrect OTP. 2 attempt(s) remaining.'), findsOneWidget);
+
+    // 2. Enter correct OTP
+    await enter('8822');
+    await tester.tap(find.text('Verify & complete delivery'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 500));
+    await tester.pump(const Duration(milliseconds: 500)); // async action + route transition
+
+    expect(find.text('Delivered!'), findsOneWidget);
+    final deliveredOrder = SupabaseService().getOrderById('order-otp-modal-1');
+    expect(deliveredOrder?.status, OrderStatus.delivered);
+    expect(deliveredOrder?.deliveredAt, isNotNull);
+
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('Rider App: Decline delivery request returns order to pool and frees rider', (WidgetTester tester) async {
+    useSize(tester, const Size(400, 850));
+
+    final rider = await SupabaseService().addDeliveryPartner(
+      name: 'Declining Rider',
+      phone: '+91 98765 99999',
+      vehicleNumber: 'TS 08 MN 0000',
+    );
+    await SupabaseService().updateDeliveryPartnerStatus(rider.id, DeliveryPartnerStatus.online);
+
+    SupabaseService().seedOrder(OrderModel(
+      id: 'order-decline-test',
+      orderNumber: '#QB-112244',
+      userId: 'cust-decline',
+      items: [],
+      itemTotal: 350.0,
+      grandTotal: 350.0,
+      status: OrderStatus.packing,
+    ));
+    // Admin assigns -> rider becomes busy with this active order
+    await SupabaseService().assignRiderToOrder(orderId: 'order-decline-test', riderId: rider.id);
+    await RiderSession().debugSignIn(rider);
+
+    await tester.pumpWidget(const MaterialApp(home: Scaffold(body: Text('home'))));
+    final nav = tester.state<NavigatorState>(find.byType(Navigator));
+    nav.push(MaterialPageRoute(builder: (_) => const NewDeliveryRequestScreen(orderId: 'order-decline-test')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 500));
+    await tester.pump(const Duration(milliseconds: 500)); // async action + route transition
+
+    expect(find.text('Reject'), findsOneWidget);
+    await tester.tap(find.text('Reject'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 500));
+    await tester.pump(const Duration(milliseconds: 500)); // async action + route transition
+
+    // Reason sheet
+    expect(find.text('Why are you rejecting?'), findsOneWidget);
+    await tester.tap(find.text('Too far from my location'));
+    await tester.pump();
+    await tester.tap(find.text('Reject request'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 500));
+    await tester.pump(const Duration(milliseconds: 500)); // async action + route transition
+
+    // Order should revert to packing and rider should be unassigned
+    final revertedOrder = SupabaseService().getOrderById('order-decline-test');
+    expect(revertedOrder?.status, OrderStatus.packing);
+    expect(revertedOrder?.riderId, isNull);
+
+    // Rider is truly freed (activeOrderId cleared) and assignable again
+    final freed = (await SupabaseService().getDeliveryPartners()).firstWhere((r) => r.id == rider.id);
+    expect(freed.status, DeliveryPartnerStatus.online);
+    expect(freed.activeOrderId, isNull);
+    expect(freed.isAvailableForAssignment, isTrue);
+    expect(await SupabaseService().getRiderRejectionCount(rider.id), 1);
+
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  // ===========================================================================
+  // PHASE 4: CUSTOMER SYNC & END-TO-END CROSS-ROLE INTEGRATION TESTS
+  // ===========================================================================
+
+  testWidgets('Phase 4: Customer OrderTrackingScreen displays assigning state when unassigned and updates dynamically when rider is assigned', (WidgetTester tester) async {
+    useSize(tester, const Size(400, 850));
+
+    final order = OrderModel(
+      id: 'order-cust-sync-1',
+      orderNumber: '#QB-998811',
+      userId: 'cust-sync-1',
+      items: [],
+      itemTotal: 400.0,
+      grandTotal: 400.0,
+      status: OrderStatus.packing,
+      deliveryOtp: '5123',
+    );
+    SupabaseService().seedOrder(order);
+
+    await tester.pumpWidget(MaterialApp(home: OrderTrackingScreen(order: order)));
+    await tester.pump();
+
+    // 1. Initial State: Unassigned
+    expect(find.text('Assigning Delivery Partner...'), findsOneWidget);
+    expect(find.text('Dark store is dispatching the nearest partner'), findsOneWidget);
+    expect(find.text('Delivery OTP'), findsOneWidget);
+    expect(find.text('5123'), findsNothing); // Individual digits rendered
+
+    // 2. Register and assign an online delivery partner
+    final rider = await SupabaseService().addDeliveryPartner(
+      name: 'Kiran Varma',
+      phone: '+91 98765 11223',
+      vehicleNumber: 'TS 07 KL 9988',
+    );
+    await SupabaseService().updateDeliveryPartnerStatus(rider.id, DeliveryPartnerStatus.online);
+    await SupabaseService().assignRiderToOrder(orderId: order.id, riderId: rider.id);
+
+    // 3. Tracking screen reacts via ordersNotifier
+    await tester.pump(const Duration(milliseconds: 200));
+
+    expect(find.text('Kiran Varma'), findsOneWidget);
+    expect(find.textContaining('TS 07 KL 9988'), findsOneWidget);
+    expect(find.text('Partner Kiran Varma assigned'), findsOneWidget);
+
+    // 4. Test Call Delivery Partner button
+    await tester.tap(find.byTooltip('Call delivery partner'));
+    await tester.pump();
+
+    expect(find.textContaining('Calling delivery partner Kiran Varma (+91 98765 11223)...'), findsOneWidget);
+
+    // Clean up timers
+    await tester.pumpWidget(const SizedBox());
+    await tester.pump();
+  });
+
+  testWidgets('Phase 4: End-to-End Multi-Role Delivery Workflow (Admin Assign -> Rider Pipeline -> Customer Tracking -> Doorstep OTP Completion)', (WidgetTester tester) async {
+    useSize(tester, const Size(400, 850));
+
+    // 1. Setup Delivery Partner in Online status
+    final rider = await SupabaseService().addDeliveryPartner(
+      name: 'Vikram Singh',
+      phone: '+91 98765 44332',
+      vehicleNumber: 'TS 08 CD 4321',
+    );
+    await SupabaseService().updateDeliveryPartnerStatus(rider.id, DeliveryPartnerStatus.online);
+
+    // 2. Customer places order #QB-778899
+    final order = OrderModel(
+      id: 'order-e2e-workflow-1',
+      orderNumber: '#QB-778899',
+      userId: 'cust-e2e-1',
+      items: [],
+      itemTotal: 500.0,
+      grandTotal: 500.0,
+      status: OrderStatus.packing,
+      deliveryOtp: '6543',
+    );
+    SupabaseService().seedOrder(order);
+
+    // 3. Admin dispatches order to Vikram Singh
+    final assignSuccess = await SupabaseService().assignRiderToOrder(
+      orderId: order.id,
+      riderId: rider.id,
+    );
+    expect(assignSuccess, isTrue);
+
+    // Verify order and rider status after dispatch
+    var currentOrder = SupabaseService().getOrderById(order.id);
+    expect(currentOrder?.status, OrderStatus.partnerAssigned);
+    expect(currentOrder?.riderName, 'Vikram Singh');
+    expect(currentOrder?.deliveryStage, 'assigned');
+
+    var currentRiders = await SupabaseService().getDeliveryPartners();
+    var currentRider = currentRiders.firstWhere((r) => r.id == rider.id);
+    expect(currentRider.isBusy, isTrue);
+
+    // 4. Rider logs in; the new request pops up automatically on the shell
+    await RiderSession().debugSignIn(currentRider);
+    await tester.pumpWidget(const MaterialApp(home: RiderShell()));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 600));
+    expect(find.text('New delivery request'), findsOneWidget);
+
+    // Accept
+    await tester.tap(find.text('Accept order'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 500));
+    await tester.pump(const Duration(milliseconds: 500)); // async action + route transition
+
+    // Reached Dark Store
+    await tester.tap(find.descendant(of: find.byKey(const ValueKey('slide_reached_store')), matching: find.byIcon(Icons.double_arrow_rounded)));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 500));
+    await tester.pump(const Duration(milliseconds: 500)); // async action + route transition
+
+    // Verify items & pick up (-> out for delivery)
+    await tester.tap(find.text('Verify items'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 500));
+    await tester.pump(const Duration(milliseconds: 500)); // async action + route transition
+    await tester.tap(find.text('Check all'));
+    await tester.pump();
+    await tester.tap(find.descendant(of: find.byKey(const ValueKey('slide_confirm_pickup')), matching: find.byIcon(Icons.double_arrow_rounded)));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 500));
+    await tester.pump(const Duration(milliseconds: 500)); // async action + route transition
+    expect(find.text('Deliver to customer'), findsOneWidget);
+
+    // 5. Verify customer tracking reflects Out for Delivery with rider details
+    currentOrder = SupabaseService().getOrderById(order.id);
+    expect(currentOrder?.status, OrderStatus.outForDelivery);
+    expect(currentOrder?.deliveryStage, 'out_for_delivery');
+
+    // 6. Rider verifies Doorstep OTP provided by customer
+    // Invalid OTP attempt
+    final invalidAttempt = await SupabaseService().verifyDoorstepOtp(
+      orderId: order.id,
+      enteredOtp: '0000',
+      riderId: rider.id,
+    );
+    expect(invalidAttempt['success'], isFalse);
+    expect(invalidAttempt['remaining_attempts'], 2);
+
+    // Valid OTP completion
+    final validAttempt = await SupabaseService().verifyDoorstepOtp(
+      orderId: order.id,
+      enteredOtp: '6543',
+      riderId: rider.id,
+    );
+    expect(validAttempt['success'], isTrue);
+
+    // 7. Atomic state verification across all roles
+    final deliveredOrder = SupabaseService().getOrderById(order.id);
+    expect(deliveredOrder?.status, OrderStatus.delivered);
+    expect(deliveredOrder?.deliveryStage, 'delivered');
+    expect(deliveredOrder?.deliveredAt, isNotNull);
+
+    // Rider status automatically reset to online & freed for dispatch
+    final updatedRiders = await SupabaseService().getDeliveryPartners();
+    final updatedRider = updatedRiders.firstWhere((r) => r.id == rider.id);
+    expect(updatedRider.isOnline, isTrue);
+    expect(updatedRider.isBusy, isFalse);
+    expect(updatedRider.totalDeliveries, 1);
+    expect(updatedRider.activeOrderId, isNull); // previously never cleared (copyWith ?? bug)
+
+    // Clean up widget tree
+    await tester.pumpWidget(const SizedBox());
+    await tester.pump();
   });
 }
